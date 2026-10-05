@@ -21,13 +21,11 @@ Para generarlo de nuevo: `python compilar.py` desde la carpeta del proyecto.
 1. **Guarda una copia de la firma.** Son dos archivos en la carpeta del proyecto que no están en
    git: `lumi-upload.jks` y `keystore.properties` (contiene la contraseña). Sin ellos no podrás
    subir actualizaciones. Cópialos a un sitio seguro fuera de este ordenador.
-2. **Publica la política de privacidad.** Está en la carpeta `docs/` (`privacidad.html` y
-   `privacy.html`). Al subir el proyecto a GitHub, activa GitHub Pages en Settings → Pages:
-   - Si Lumi tiene su propio repositorio: rama `main`, carpeta `/docs`. La dirección será
-     `https://TU-USUARIO.github.io/NOMBRE-DEL-REPO/privacidad.html`.
-   - Si Lumi va dentro de un repositorio con más proyectos: rama `main`, carpeta `/ (root)`.
-     La dirección será `https://TU-USUARIO.github.io/NOMBRE-DEL-REPO/Lumi/docs/privacidad.html`.
-   Esa dirección es la que pide Google Play.
+2. **Enlace de la política de privacidad.** Hay dos, y cualquiera vale para Google Play:
+   - `https://github.com/XsharklinX/lumi/blob/main/PRIVACY.md` funciona en cuanto hagas el
+     push, sin configurar nada, siempre que el repositorio sea público.
+   - `https://xsharklinx.github.io/lumi/privacidad.html` es una página web propia. Para
+     activarla: en GitHub, Settings → Pages → rama `main`, carpeta `/docs`. Tarda un minuto.
 3. **Revisa las capturas.** Ya hay siete en `capturas/`, hechas con fotos de muestra.
 
 ## Pasos en Play Console
