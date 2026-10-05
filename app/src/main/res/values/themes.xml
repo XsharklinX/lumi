@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="lumi_bg">#0E0E13</color>
+    <color name="lumi_brand">#5B3DF5</color>
+
+    <style name="Theme.Lumi" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/lumi_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
