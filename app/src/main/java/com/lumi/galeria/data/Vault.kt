@@ -30,12 +30,15 @@ class VaultItem(val id: String, val name: String, val isVideo: Boolean, val date
  * Carpeta privada. Cada archivo se guarda cifrado (AES-256) dentro del espacio de la app, fuera de
  * la galería del sistema. La clave de los archivos se guarda a su vez cifrada con otra clave que
  * vive en el almacén seguro del teléfono y no se puede extraer de él.
+ *
+ * Hay una segunda carpeta igual, la del PIN señuelo, en otro directorio ([name]) y con su propia
+ * clave: desde dentro de la app no hay forma de saber que existe la otra.
  */
-class Vault(private val context: Context) {
-    private val dir = File(context.filesDir, "vault").apply { mkdirs() }
-    private val temp = File(context.cacheDir, "vault_open")
+class Vault(private val context: Context, name: String = "vault") {
+    private val dir = File(context.filesDir, name).apply { mkdirs() }
+    private val temp = File(context.cacheDir, "${name}_open")
     private val indexFile = File(dir, "index.tsv")
-    private val prefs = context.getSharedPreferences("vault", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences(name, Context.MODE_PRIVATE)
 
     private val dataKey: SecretKey by lazy { loadOrCreateDataKey() }
 

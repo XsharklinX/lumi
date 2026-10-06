@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.asImageBitmap
 import com.lumi.galeria.LumiViewModel
 import com.lumi.galeria.Screen
 import com.lumi.galeria.UiState
@@ -46,9 +47,11 @@ import com.lumi.galeria.countText
 import com.lumi.galeria.data.MediaItem
 import com.lumi.galeria.data.SHRINK_OPTIONS
 import com.lumi.galeria.data.ShrinkOption
+import com.lumi.galeria.data.makeGif
 import com.lumi.galeria.data.savePdf
 import com.lumi.galeria.data.shrinkVideo
 import com.lumi.galeria.data.shrunkSize
+import com.lumi.galeria.formatDuration
 import com.lumi.galeria.formatSize
 import java.time.LocalDate
 import kotlinx.coroutines.Dispatchers
@@ -228,6 +231,118 @@ fun ShrinkSheet(item: MediaItem, vm: LumiViewModel, onDismiss: () -> Unit) {
                         }
                     },
                     Modifier.fillMaxWidth(),
+                )
+            }
+        }
+    }
+}
+
+/** Duración máxima de un GIF: más largo pesa demasiado para mandarlo. */
+private const val GIF_MAX_MS = 8000L
+
+/**
+ * Convertir unos segundos de un vídeo en GIF. Se elige el tramo (hasta 8 segundos) y el tamaño; el
+ * fotograma de arriba es el del punto que se está moviendo.
+ */
+@Composable
+fun GifScreen(screen: Screen.Gif, state: UiState, vm: LumiViewModel) {
+    val item = state.items.firstOrNull { it.id == screen.id && it.isVideo }
+    if (item == null || item.duration < 1000) {
+        LaunchedEffect(Unit) { vm.back() }
+        return
+    }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val total = item.duration.toFloat()
+    var range by remember { mutableStateOf(0f..(minOf(3000f, total) / total)) }
+    var focus by remember { mutableStateOf(0f) }
+    var big by remember { mutableStateOf(false) }
+    var progress by remember { mutableIntStateOf(-1) }
+    var job by remember { mutableStateOf<Job?>(null) }
+    val startMs = (range.start * total).toLong()
+    val endMs = (range.endInclusive * total).toLong()
+    val frame by androidx.compose.runtime.produceState<android.graphics.Bitmap?>(null, (focus * total / 300).toLong()) {
+        value = withContext(Dispatchers.IO) {
+            val retriever = android.media.MediaMetadataRetriever()
+            val shot = runCatching {
+                retriever.setDataSource(context, item.uri)
+                retriever.getScaledFrameAtTime((focus * total).toLong() * 1000, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 720, 720)
+            }.getOrNull()
+            runCatching { retriever.release() }
+            shot ?: value
+        }
+    }
+    val width = if (big) 480 else 320
+    // Calculado a ojo con GIF reales: unos 18 KB por fotograma a 320 px.
+    val guess = (endMs - startMs) / 100 * (if (big) 40_000L else 18_000L)
+
+    Column(Modifier.fillMaxSize().background(Lumi.Bg).navigationBarsPadding()) {
+        ScreenHeader("Hacer un GIF", "De ${formatDuration(startMs)} a ${formatDuration(endMs)}", onBack = { job?.cancel(); vm.back() })
+        Box(Modifier.weight(1f).fillMaxWidth().padding(16.dp).clip(RoundedCornerShape(20.dp)).background(Color.Black), contentAlignment = Alignment.Center) {
+            val shot = frame
+            if (shot != null) {
+                androidx.compose.foundation.Image(
+                    shot.asImageBitmap(), null, Modifier.fillMaxSize(),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                )
+            } else {
+                MediaThumb(item, 1024, Modifier.fillMaxSize())
+            }
+        }
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            androidx.compose.material3.RangeSlider(
+                value = range,
+                onValueChange = { next ->
+                    val maxSpan = GIF_MAX_MS / total
+                    // Si el tramo pasa de 8 segundos, el otro extremo se mueve con el dedo.
+                    focus = if (next.start != range.start) next.start else next.endInclusive
+                    range = when {
+                        next.endInclusive - next.start <= maxSpan -> next
+                        next.start != range.start -> next.start..(next.start + maxSpan)
+                        else -> (next.endInclusive - maxSpan)..next.endInclusive
+                    }
+                },
+                enabled = progress < 0,
+                colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = Lumi.Accent, activeTrackColor = Lumi.Accent, inactiveTrackColor = Lumi.Line),
+            )
+            Text("Hasta 8 segundos. Se ve a 10 fotogramas por segundo y se repite sin parar.", style = SmallStyle)
+            Row(Modifier.fillMaxWidth().clip(CircleShape).background(Lumi.Surface).padding(4.dp)) {
+                listOf(false to "Pequeño", true to "Mediano").forEach { (value, label) ->
+                    val on = big == value
+                    Text(
+                        label,
+                        style = LabelStyle,
+                        color = if (on) Lumi.OnAccent else Lumi.Ink,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.weight(1f).clip(CircleShape).background(if (on) Lumi.Accent else Color.Transparent)
+                            .clickable(enabled = progress < 0) { big = value }.padding(vertical = 10.dp),
+                    )
+                }
+            }
+            if (progress >= 0) {
+                LinearProgressIndicator(
+                    progress = { progress / 100f },
+                    color = Lumi.Accent, trackColor = Lumi.Surface,
+                    modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
+                )
+                PillButton("Cancelar", { job?.cancel(); progress = -1 }, Modifier.fillMaxWidth(), primary = false)
+            } else {
+                PillButton(
+                    "Guardar GIF · unos ${formatSize(guess)}",
+                    {
+                        progress = 0
+                        job = scope.launch {
+                            val ok = withContext(Dispatchers.Default) { makeGif(context, item, startMs, endMs, width) { progress = it } }
+                            progress = -1
+                            vm.say(if (ok) "GIF guardado en el álbum Lumi" else "No se pudo hacer el GIF")
+                            if (ok) {
+                                vm.reload()
+                                vm.back()
+                            }
+                        }
+                    },
+                    Modifier.fillMaxWidth(),
+                    enabled = endMs - startMs >= 500,
                 )
             }
         }

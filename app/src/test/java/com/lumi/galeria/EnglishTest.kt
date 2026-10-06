@@ -35,9 +35,13 @@ class EnglishTest {
         val missing = ArrayList<String>()
         // La segunda mitad de una frase partida en dos líneas: la frase entera se prueba en English.kt.
         var continued = false
+        // Las palabras del buscador de Ajustes no se ven: van en "words = ..." o como segundo dato de Group(...).
+        var groupOpen = false
         root.walkTopDown().filter { it.extension == "kt" && it.name !in setOf("Words.kt", "English.kt", "Geo.kt") }.forEach { file ->
             file.readLines().forEach { line ->
                 val trimmed = line.trim()
+                val keywords = "words = \"" in line || (groupOpen && trimmed.startsWith("\""))
+                groupOpen = trimmed.startsWith("Group(") && trimmed.endsWith("(")
                 val secondHalf = continued
                 continued = trimmed.endsWith("\" +")
                 if (secondHalf) return@forEach
@@ -46,7 +50,7 @@ class EnglishTest {
                     val text = match.groupValues[1]
                     // Los textos con un dato dentro se prueban aparte, con datos de ejemplo.
                     if ('$' in text || '\\' in text || text.length < 2 || text.startsWith(" ") || text.startsWith(")") || text.startsWith(".")) return@forEach
-                    if (!spanish.containsMatchIn(text) || internal(text, line)) return@forEach
+                    if (!spanish.containsMatchIn(text) || internal(text, line) || keywords) return@forEach
                     if (tr(text) == text) missing += "${file.name}: $text"
                 }
             }

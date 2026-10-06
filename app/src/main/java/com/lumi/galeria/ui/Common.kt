@@ -1,5 +1,7 @@
 package com.lumi.galeria.ui
 
+import com.lumi.galeria.data.cardVolume
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -84,6 +86,22 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.lumi.galeria.tr
+import com.lumi.galeria.dayTitle
+import kotlin.math.abs
+import androidx.media3.ui.PlayerView
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.common.Player
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.DisposableEffect
 import com.lumi.galeria.LumiViewModel
 import com.lumi.galeria.PinStep
 import com.lumi.galeria.Screen
@@ -124,6 +142,8 @@ class Actions(
     val pip: () -> Unit,
     /** Abre la cámara del teléfono. */
     val camera: () -> Unit,
+    /** Comparte archivos recién creados (por ejemplo, fotos exportadas). */
+    val shareUris: (uris: List<android.net.Uri>) -> Unit = {},
 )
 
 /**
@@ -191,9 +211,22 @@ fun PhotoTile(
     tone: Int = 0,
     /** La leyenda avisa de algo que corre prisa: va en rojo. */
     urgent: Boolean = false,
+    /** Parte del vídeo que ya se vio, de 0 a 1. */
+    watched: Float = 0f,
+    /** Mientras se mantiene el dedo encima de un vídeo, se reproduce aquí mismo. */
+    preview: Boolean = false,
+    /** Foto en movimiento: lleva un vídeo corto dentro. */
+    motion: Boolean = false,
 ) {
-    Box(modifier.clip(RoundedCornerShape(corner))) {
+    Box(
+        modifier.clip(RoundedCornerShape(corner)).semantics {
+            contentDescription = tr(if (item.isVideo) "Vídeo" else "Foto") + ", " + dayTitle(item.date) +
+                (if (favorite) ", " + tr("favorita") else "")
+            if (selected != null) this.selected = selected
+        },
+    ) {
         MediaThumb(item, px, Modifier.fillMaxSize(), tone)
+        if (preview && item.isVideo) VideoPreview(item, Modifier.fillMaxSize())
         if (badges) {
             if (stackSize > 1) {
                 Badge(Modifier.align(Alignment.TopEnd)) {
@@ -211,6 +244,13 @@ fun PhotoTile(
                 }
             } else if (item.isGif) {
                 Badge(Modifier.align(Alignment.BottomStart)) { Text("GIF", style = SmallStyle, color = Color.White) }
+            } else if (motion) {
+                // Un punto con su aro, como el botón de grabar: se mueve.
+                Box(
+                    Modifier.align(Alignment.BottomStart).padding(6.dp).size(14.dp).shadow(3.dp, CircleShape).clip(CircleShape)
+                        .border(1.5.dp, Color.White, CircleShape).semantics { contentDescription = tr("Foto en movimiento") },
+                    contentAlignment = Alignment.Center,
+                ) { Box(Modifier.size(6.dp).clip(CircleShape).background(Color.White)) }
             }
             if (item.onCard && selected == null) {
                 // Pequeño y sin fondo: una sombra suave basta para que se lea sobre cualquier foto.
@@ -219,6 +259,11 @@ fun PhotoTile(
                     Modifier.align(Alignment.TopStart).padding(6.dp).size(15.dp).shadow(3.dp, CircleShape),
                     tint = Color.White,
                 )
+            }
+        }
+        if (watched > 0f) {
+            Box(Modifier.align(Alignment.BottomStart).fillMaxWidth().height(3.dp).background(Color.Black.copy(alpha = 0.5f))) {
+                Box(Modifier.fillMaxWidth(watched.coerceIn(0f, 1f)).height(3.dp).background(Lumi.Accent))
             }
         }
         if (favorite) {
@@ -271,6 +316,10 @@ fun Dock(current: Screen, onSelect: (Screen) -> Unit, modifier: Modifier = Modif
                 modifier = Modifier
                     .clip(CircleShape)
                     .background(if (on) Lumi.Accent else Color.Transparent)
+                    .semantics {
+                        role = Role.Tab
+                        selected = on
+                    }
                     .clickable { onSelect(screen) }
                     .padding(horizontal = 26.dp, vertical = 12.dp),
             )
@@ -315,7 +364,8 @@ fun PillButton(
 
 @Composable
 fun BarIcon(icon: ImageVector, label: String, onClick: () -> Unit, tint: Color = Lumi.Ink) {
-    Icon(icon, label, Modifier.clip(CircleShape).clickable(onClick = onClick).padding(10.dp).size(22.dp), tint = tint)
+    // Al menos 48 dp para el dedo, aunque el icono se vea más pequeño.
+    Icon(icon, label, Modifier.minimumInteractiveComponentSize().clip(CircleShape).clickable(onClick = onClick).padding(10.dp).size(22.dp), tint = tint)
 }
 
 @Composable
@@ -382,11 +432,18 @@ fun PinOverlay(state: UiState, vm: LumiViewModel, onBiometric: (() -> Unit)?) {
             when (step) {
                 PinStep.ASK -> "Escribe tu PIN"
                 PinStep.CREATE -> "Elige un PIN"
-                PinStep.REPEAT -> "Escríbelo otra vez"
+                PinStep.REPEAT, PinStep.DECOY_REPEAT -> "Escríbelo otra vez"
+                PinStep.DECOY_CREATE -> "Elige el PIN señuelo"
             },
             style = TitleStyle.copy(fontSize = 26.sp),
         )
-        Text(state.pinError ?: if (step == PinStep.ASK) "El PIN de Lumi, no el del teléfono" else "De 4 a 8 cifras", style = SmallStyle.copy(fontSize = 14.sp), color = if (state.pinError != null) Lumi.Danger else Lumi.Muted)
+        Text(
+            state.pinError ?: when (step) {
+                PinStep.ASK -> "El PIN de Lumi, no el del teléfono"
+                PinStep.DECOY_CREATE -> "Distinto de tu PIN. Abrirá otra carpeta privada."
+                else -> "De 4 a 8 cifras"
+            },
+            style = SmallStyle.copy(fontSize = 14.sp), color = if (state.pinError != null) Lumi.Danger else Lumi.Muted)
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.height(18.dp)) {
             repeat(maxOf(pin.length, 4)) { i ->
                 Box(Modifier.size(14.dp).clip(CircleShape).background(if (i < pin.length) Lumi.Accent else Lumi.Line))
@@ -439,14 +496,22 @@ fun EmptyMessage(title: String, text: String, modifier: Modifier = Modifier) {
 }
 
 /**
- * Selección arrastrando: tras una pulsación larga, todo lo que queda entre la primera foto
- * y el dedo se marca. [idAt] da la foto de cada posición de la cuadrícula (null en los títulos).
+ * Selección arrastrando. Sin nada elegido, empieza con una pulsación larga. Con algo ya elegido,
+ * basta con arrastrar de lado (o dejar el dedo quieto un momento): todo lo que queda entre la
+ * primera foto y el dedo se marca. Arrastrar en vertical sigue desplazando la cuadrícula.
+ * [idAt] da la foto de cada posición (null en los títulos). [onHold] avisa de qué foto tiene el
+ * dedo encima mientras no se mueve, y de null al moverlo o soltarlo.
+ *
+ * Con un vídeo y nada elegido, mantener el dedo solo enseña la vista previa: el vídeo no se
+ * marca hasta que el dedo se mueve. [isVideo] dice cuáles son vídeos.
  */
 fun Modifier.dragSelect(
     grid: LazyGridState,
     idAt: (index: Int) -> Long?,
     selection: () -> Set<Long>,
     onChange: (Set<Long>) -> Unit,
+    onHold: (Long?) -> Unit = {},
+    isVideo: (Long) -> Boolean = { false },
 ): Modifier = pointerInput(grid) {
     var start = -1
     var base = emptySet<Long>()
@@ -463,21 +528,122 @@ fun Modifier.dragSelect(
 
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
-        val press = awaitLongPressOrCancellation(down.id) ?: return@awaitEachGesture
-        val first = indexAt(press.position)
+        val slop = viewConfiguration.touchSlop
+        var held = true
+        if (selection().isEmpty()) {
+            awaitLongPressOrCancellation(down.id) ?: return@awaitEachGesture
+        } else {
+            val deadline = System.currentTimeMillis() + viewConfiguration.longPressTimeoutMillis
+            while (true) {
+                val left = deadline - System.currentTimeMillis()
+                // Sin moverse hasta el plazo: cuenta como pulsación larga.
+                val event = if (left <= 0) null else withTimeoutOrNull(left) { awaitPointerEvent() }
+                if (event == null) break
+                val change = event.changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
+                if (!change.pressed || change.isConsumed) return@awaitEachGesture
+                val moved = change.position - down.position
+                if (abs(moved.y) > slop && abs(moved.y) >= abs(moved.x)) return@awaitEachGesture
+                if (abs(moved.x) > slop) {
+                    held = false
+                    break
+                }
+            }
+        }
+        val first = indexAt(down.position)
         val id = first?.let(idAt) ?: return@awaitEachGesture
+        if (held && selection().isEmpty() && isVideo(id)) {
+            // Solo vista previa mientras el dedo esté quieto. Soltar no abre ni marca nada.
+            onHold(id)
+            var moved = false
+            while (true) {
+                val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
+                change.consume()
+                if (!change.pressed) break
+                if ((change.position - down.position).getDistance() > slop * 2) {
+                    moved = true
+                    break
+                }
+            }
+            onHold(null)
+            if (!moved) return@awaitEachGesture
+            held = false
+        }
         start = first
         base = selection()
         onChange(base + id)
+        if (held) onHold(id)
         // Desde aquí el gesto es de la selección: se atiende antes que el desplazamiento de la
         // cuadrícula y que el toque de la foto, y se les quita para que no actúen también.
-        while (true) {
-            val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
-            change.consume()
-            if (!change.pressed) break
-            val index = indexAt(change.position) ?: continue
-            onChange(base + (min(start, index)..max(start, index)).mapNotNull(idAt))
+        try {
+            while (true) {
+                val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
+                change.consume()
+                if (!change.pressed) break
+                if ((change.position - down.position).getDistance() > slop * 2) onHold(null)
+                val index = indexAt(change.position) ?: continue
+                onChange(base + (min(start, index)..max(start, index)).mapNotNull(idAt))
+            }
+        } finally {
+            onHold(null)
         }
+    }
+}
+
+/**
+ * Un vídeo que se reproduce en silencio dentro de su miniatura mientras se mantiene el dedo
+ * encima. El reproductor vive solo lo que dura la vista previa.
+ */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+@Composable
+fun VideoPreview(item: MediaItem, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val player = remember(item.id) {
+        ExoPlayer.Builder(context).build().apply {
+            volume = 0f
+            repeatMode = Player.REPEAT_MODE_ONE
+            setMediaItem(androidx.media3.common.MediaItem.fromUri(item.uri))
+            playWhenReady = true
+            prepare()
+        }
+    }
+    DisposableEffect(player) { onDispose { player.release() } }
+    AndroidView(
+        factory = { ctx ->
+            PlayerView(ctx).apply {
+                useController = false
+                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                this.player = player
+            }
+        },
+        onRelease = { it.player = null },
+        modifier = modifier,
+    )
+}
+
+/**
+ * Pellizcar con dos dedos sobre una cuadrícula: [onPinch] recibe true al acercar (menos columnas)
+ * y false al alejar. Un pellizco cuenta una sola vez aunque se siga moviendo.
+ */
+fun Modifier.pinchColumns(onPinch: (closer: Boolean) -> Unit): Modifier = pointerInput(Unit) {
+    awaitEachGesture {
+        var zoom = 1f
+        var fired = false
+        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        do {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            if (event.changes.count { it.pressed } >= 2) {
+                zoom *= event.calculateZoom()
+                event.changes.forEach { it.consume() }
+                if (!fired && zoom > 1.25f) {
+                    fired = true
+                    onPinch(true)
+                } else if (!fired && zoom < 0.8f) {
+                    fired = true
+                    onPinch(false)
+                }
+            }
+        } while (event.changes.any { it.pressed })
     }
 }
 
@@ -568,9 +734,13 @@ fun SelectionBar(chosen: List<MediaItem>, state: UiState, vm: LumiViewModel, act
     var moving by remember { mutableStateOf<Boolean?>(null) }
     val haptic = LocalHapticFeedback.current
     val weight = remember(chosen) { chosen.sumOf { it.size } }
+    val context = LocalContext.current
+    val card = remember { cardVolume(context) }
 
     val targets = remember(state.albums) { state.albums.filter { isWritableAlbumPath(it.path) && !it.locked }.take(12) }
     Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Con otra app al lado, lo elegido se puede soltar en ella.
+        if (canDragOut()) Box(Modifier.align(Alignment.CenterHorizontally)) { DragOutHandle(chosen) }
         // Álbumes a un toque: se elige uno y lo marcado se mueve allí, sin abrir ningún menú.
         if (targets.isNotEmpty()) {
             Row(
@@ -620,10 +790,29 @@ fun SelectionBar(chosen: List<MediaItem>, state: UiState, vm: LumiViewModel, act
                 Box(Modifier.weight(1f)) {
                     SelectAction(Icons.Filled.MoreVert, "Más", Modifier.fillMaxWidth()) { menu = true }
                     DropdownMenu(menu, { menu = false }, containerColor = Lumi.Surface) {
-                        DropdownMenuItem({ Text("Marcar como favoritas") }, {
+                        DropdownMenuItem({ Text(if (chosen.all { it.id in state.favorites }) "Quitar de favoritas" else "Marcar como favoritas") }, {
                             menu = false
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             vm.toggleFavorite(chosen.map { it.id })
+                            onClear()
+                        })
+                        if (card != null && chosen.any { !it.onCard }) {
+                            DropdownMenuItem({ Text("Mover a la tarjeta SD") }, {
+                                menu = false
+                                vm.moveToCard(chosen, card) { copied -> actions.deleteForever(copied) }
+                                onClear()
+                            })
+                        }
+                        DropdownMenuItem({ Text("Copiar") }, {
+                            menu = false
+                            vm.clip = com.lumi.galeria.Clip(chosen, move = false)
+                            vm.say("Listas para pegar. Abre un álbum y pulsa «Pegar».")
+                            onClear()
+                        })
+                        DropdownMenuItem({ Text("Cortar") }, {
+                            menu = false
+                            vm.clip = com.lumi.galeria.Clip(chosen, move = true)
+                            vm.say("Listas para pegar. Abre un álbum y pulsa «Pegar».")
                             onClear()
                         })
                         DropdownMenuItem({ Text("Copiar a un álbum") }, { menu = false; moving = false })
@@ -641,6 +830,26 @@ fun SelectionBar(chosen: List<MediaItem>, state: UiState, vm: LumiViewModel, act
                             else if (photos.size > 40) vm.say("Un PDF admite hasta 40 fotos")
                             // Las páginas van de la más antigua a la más reciente, como se hicieron.
                             else vm.open(Screen.Pdf(photos.sortedBy { it.date }.map { it.id }))
+                            onClear()
+                        })
+                        DropdownMenuItem({ Text("Exportar: tamaño, formato, marca de agua…") }, {
+                            menu = false
+                            val photos = chosen.filter { !it.isVideo }
+                            if (photos.isEmpty()) vm.say("Elige alguna foto para exportar") else vm.open(Screen.Export(photos.map { it.id }))
+                            onClear()
+                        })
+                        DropdownMenuItem({ Text("Vídeo con música") }, {
+                            menu = false
+                            val photos = chosen.filter { !it.isVideo }
+                            if (photos.size < 2) vm.say("Elige al menos dos fotos para el vídeo")
+                            else vm.open(Screen.MemoryVideo("", photos.map { it.id }))
+                            onClear()
+                        })
+                        DropdownMenuItem({ Text("Animar (GIF)") }, {
+                            menu = false
+                            val photos = chosen.filter { !it.isVideo }
+                            if (photos.size in 2..40) vm.open(Screen.Animate(photos.map { it.id }))
+                            else vm.say("Elige entre 2 y 40 fotos para animarlas")
                             onClear()
                         })
                         DropdownMenuItem({ Text("Hacer un collage") }, {

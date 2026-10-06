@@ -1,5 +1,10 @@
 package com.lumi.galeria.ui
 
+import com.lumi.galeria.data.MediaItem
+import com.lumi.galeria.data.thingWords
+import com.lumi.galeria.data.normalize
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -125,6 +130,22 @@ fun SearchScreen(state: UiState, vm: LumiViewModel, link: GridLink) {
 
         FilterBar(state, found, filters, ::set)
 
+        // Mientras se escribe: lo que de verdad hay en las fotos, con cuántas son.
+        val suggestions by produceState(emptyList<Suggestion>(), query, state.index, state.places, state.albums) {
+            value = if (query.trim().length < 2) emptyList() else withContext(Dispatchers.Default) { suggest(query, state) }
+        }
+        if (suggestions.isNotEmpty()) {
+            SuggestionList(suggestions) { s ->
+                focus.clearFocus()
+                when (s.kind) {
+                    SuggestKind.THING -> { vm.searchFilters = filters.copy(thing = s.value); vm.searchQuery = "" }
+                    SuggestKind.PLACE -> { vm.searchFilters = filters.copy(place = s.value); vm.searchQuery = "" }
+                    SuggestKind.ALBUM -> { vm.searchFilters = filters.copy(album = s.album); vm.searchQuery = "" }
+                    SuggestKind.TEXT -> Unit
+                }
+            }
+        }
+
         if (idle) {
             Explore(state, onQuery = { vm.searchQuery = it; focus.clearFocus() }, onClear = vm::clearSearches, onFilter = ::set)
         } else if (results.isEmpty()) {
@@ -152,12 +173,12 @@ fun SearchScreen(state: UiState, vm: LumiViewModel, link: GridLink) {
                 modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 8.dp),
             )
             LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
+                columns = GridCells.Fixed(scaledColumns(state.itemColumns)),
                 state = grid,
                 contentPadding = PaddingValues(start = 2.dp, end = 2.dp, bottom = 40.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
-                modifier = Modifier.fillMaxSize().onGloballyPositioned { container[0] = it },
+                modifier = Modifier.fillMaxSize().onGloballyPositioned { container[0] = it }.pinchColumns(vm::zoomItems),
             ) {
                 items(results, key = { it.id }) { item ->
                     PhotoTile(
@@ -165,6 +186,7 @@ fun SearchScreen(state: UiState, vm: LumiViewModel, link: GridLink) {
                         px = 320,
                         favorite = item.id in state.favorites,
                         tone = state.index[item.id]?.color ?: 0,
+                        motion = state.index[item.id]?.motion == true,
                         modifier = Modifier.aspectRatio(1f).clickable {
                             focus.clearFocus()
                             vm.rememberSearch(query)
@@ -205,6 +227,10 @@ private fun FilterBar(state: UiState, found: Found, filters: Filters, set: (Filt
             Chip(name.ifEmpty { "Álbum" }, on = true) { set(filters.copy(album = null)) }
         }
         filters.thing?.let { Chip(it.replaceFirstChar(Char::uppercase), on = true) { set(filters.copy(thing = null)) } }
+        filters.person?.let { Chip(it, on = true) { set(filters.copy(person = null)) } }
+        filters.camera?.let { Chip(it, on = true) { set(filters.copy(camera = null)) } }
+        filters.size?.let { Chip(it.label, on = true) { set(filters.copy(size = null)) } }
+        filters.format?.let { Chip(it, on = true) { set(filters.copy(format = null)) } }
         filters.kinds.forEach { kind -> Chip(kind.label, on = true) { set(filters.copy(kinds = filters.kinds - kind)) } }
 
         // Los que abren una lista. Solo aparecen si tienen algo que ofrecer.
@@ -213,6 +239,10 @@ private fun FilterBar(state: UiState, found: Found, filters: Filters, set: (Filt
         if (filters.place == null && places.isNotEmpty()) ListChip("Dónde", places) { set(filters.copy(place = it)) }
         if (filters.album == null && albums.size > 1) ListChip("Álbum", albums) { set(filters.copy(album = it)) }
         if (filters.thing == null && things.isNotEmpty()) ListChip("Qué hay", things) { set(filters.copy(thing = it)) }
+        if (filters.person == null && found.people.isNotEmpty()) ListChip("Quién", found.people) { set(filters.copy(person = it)) }
+        if (filters.camera == null && found.cameras.size > 1) ListChip("Cámara", found.cameras) { set(filters.copy(camera = it)) }
+        if (filters.size == null && found.sizes.size > 1) ListChip("Tamaño", found.sizes) { set(filters.copy(size = it)) }
+        if (filters.format == null && found.formats.size > 1) ListChip("Formato", found.formats) { set(filters.copy(format = it)) }
 
         kinds.filter { it.value !in filters.kinds && it.count != 0 }.forEach { option ->
             Chip(option.label, on = false) { set(filters.copy(kinds = filters.kinds + option.value)) }
@@ -332,6 +362,82 @@ private fun TopicCard(topic: Topic, onClick: () -> Unit) {
         Column(Modifier.align(Alignment.BottomStart).padding(10.dp)) {
             Text(topic.word.replaceFirstChar { it.uppercase() }, style = LabelStyle.copy(fontSize = 14.sp), color = Color.White, maxLines = 1)
             Text("${topic.count}", style = SmallStyle, color = Color.White.copy(alpha = 0.85f))
+        }
+    }
+}
+
+private enum class SuggestKind(val label: String) { THING("Cosa"), PLACE("Lugar"), ALBUM("Álbum"), TEXT("Escrito en la foto") }
+
+/** Una sugerencia del buscador: qué es, cómo se llama, cuántas fotos hay y una de muestra. */
+private class Suggestion(val kind: SuggestKind, val label: String, val count: Int, val cover: MediaItem?, val value: String, val album: Long = 0)
+
+/**
+ * Cosas, lugares y álbumes cuyo nombre empieza (o contiene) lo escrito, y cuántas fotos tienen
+ * texto con esas letras. Primero lo que empieza igual y, a igualdad, lo que tiene más fotos.
+ */
+private fun suggest(query: String, state: UiState): List<Suggestion> {
+    val q = normalize(query.trim())
+    fun rank(name: String): Int {
+        val n = normalize(name)
+        return when {
+            n.startsWith(q) -> 0
+            n.contains(" $q") -> 1
+            q.length >= 3 && n.contains(q) -> 2
+            else -> -1
+        }
+    }
+    val things = HashMap<String, Pair<Int, MediaItem>>()
+    val places = HashMap<String, Pair<Int, MediaItem>>()
+    var written = 0
+    var writtenCover: MediaItem? = null
+    for (item in state.items) {
+        val entry = state.index[item.id]
+        for (word in thingWords(entry)) {
+            if (rank(word) < 0 && rank(tr(word)) < 0) continue
+            val now = things[word]
+            things[word] = (now?.first ?: 0) + 1 to (now?.second ?: item)
+        }
+        state.places[item.id]?.let { place ->
+            if (rank(place) >= 0) {
+                val now = places[place]
+                places[place] = (now?.first ?: 0) + 1 to (now?.second ?: item)
+            }
+        }
+        if (q.length >= 3 && entry?.plainText?.contains(q) == true) {
+            written++
+            if (writtenCover == null) writtenCover = item
+        }
+    }
+    fun <K> best(map: Map<K, Pair<Int, MediaItem>>, name: (K) -> String, take: Int) =
+        map.entries.sortedWith(compareBy<Map.Entry<K, Pair<Int, MediaItem>>> { minOf(rank(name(it.key)).let { r -> if (r < 0) 9 else r }, 9) }.thenByDescending { it.value.first }).take(take)
+    val out = ArrayList<Suggestion>()
+    best(things, { tr(it) }, 3).forEach { out += Suggestion(SuggestKind.THING, it.key, it.value.first, it.value.second, it.key) }
+    best(places, { it }, 2).forEach { out += Suggestion(SuggestKind.PLACE, it.key, it.value.first, it.value.second, it.key) }
+    state.albums.filter { !it.locked && rank(it.name) >= 0 }.sortedByDescending { it.count }.take(2).forEach {
+        out += Suggestion(SuggestKind.ALBUM, it.name, it.count, it.cover, it.name, it.bucketId)
+    }
+    if (written > 0) out += Suggestion(SuggestKind.TEXT, "«${query.trim()}»", written, writtenCover, query.trim())
+    return out
+}
+
+/** La lista de sugerencias, bajo los filtros. */
+@Composable
+private fun SuggestionList(suggestions: List<Suggestion>, onPick: (Suggestion) -> Unit) {
+    Column(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 8.dp).clip(RoundedCornerShape(18.dp)).background(Lumi.Surface)) {
+        suggestions.forEach { s ->
+            Row(
+                Modifier.fillMaxWidth().clickable { onPick(s) }.padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(Lumi.Bg)) {
+                    s.cover?.let { MediaThumb(it, 160, Modifier.fillMaxSize()) }
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(s.label.replaceFirstChar { it.uppercase() }, style = LabelStyle.copy(fontSize = 15.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(tr(s.kind.label) + " · " + countText(s.count, "foto", "fotos"), style = SmallStyle)
+                }
+            }
         }
     }
 }

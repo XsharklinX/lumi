@@ -65,6 +65,12 @@ fun CalendarSheet(tiles: List<MediaItem>, start: LocalDate, onPick: (LocalDate) 
             found
         }
     }
+    val counts by produceState(emptyMap<LocalDate, Int>(), tiles) {
+        value = withContext(Dispatchers.Default) {
+            val zone = ZoneId.systemDefault()
+            HashMap<LocalDate, Int>().apply { tiles.forEach { merge(Instant.ofEpochMilli(it.date).atZone(zone).toLocalDate(), 1, Int::plus) } }
+        }
+    }
     var month by remember { mutableStateOf(YearMonth.from(start)) }
     val years = remember(days) { days.keys.mapTo(sortedSetOf()) { it.year }.toList() }
     val today = remember { LocalDate.now() }
@@ -108,6 +114,15 @@ fun CalendarSheet(tiles: List<MediaItem>, start: LocalDate, onPick: (LocalDate) 
                                 MediaThumb(photo, 160, Modifier.fillMaxSize())
                                 Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.28f)))
                             }
+                            // Cuántas fotos tiene el día, en la esquina.
+                            if (photo != null && (counts[day] ?: 0) > 1) {
+                                Text(
+                                    "${counts[day]}",
+                                    style = SmallStyle.copy(fontSize = 9.sp),
+                                    color = Color.White,
+                                    modifier = Modifier.align(Alignment.BottomEnd).padding(3.dp),
+                                )
+                            }
                             if (day != null) {
                                 Text(
                                     number.toString(),
@@ -123,6 +138,7 @@ fun CalendarSheet(tiles: List<MediaItem>, start: LocalDate, onPick: (LocalDate) 
                     }
                 }
             }
+            Text("Toca un día para ver lo que hiciste o guardaste ese día.", style = SmallStyle)
             if (years.size > 1) {
                 Row(Modifier.horizontalScroll(rememberScrollState()).padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     years.asReversed().forEach { year ->
@@ -149,7 +165,7 @@ fun CalendarSheet(tiles: List<MediaItem>, start: LocalDate, onPick: (LocalDate) 
 }
 
 /** Algo para volver a mirar: unas fotos con título, y a dónde lleva tocarlo. */
-class Story(val title: String, val cover: MediaItem, val count: Int, val open: Screen)
+class Story(val title: String, val cover: MediaItem, val count: Int, val open: Screen, val ids: List<Long>)
 
 /**
  * Lo que se propone arriba de Fotos: estos mismos días en otros años, el último viaje y las
@@ -157,9 +173,19 @@ class Story(val title: String, val cover: MediaItem, val count: Int, val open: S
  */
 fun storiesOf(state: UiState): List<Story> {
     val out = ArrayList<Story>()
-    state.memory?.let { out += Story(it.title, it.items.first(), it.items.size, Screen.Items(it.title, Source.Auto("recuerdo"))) }
+    state.memory?.let { out += Story(it.title, it.items.first(), it.items.size, Screen.Items(it.title, Source.Auto("recuerdo")), it.items.map { m -> m.id }) }
     state.autoAlbums.firstOrNull { it.isTrip }?.let { trip ->
-        out += Story(trip.title, trip.items.first(), trip.items.size, Screen.Items(trip.title, Source.Auto(trip.key)))
+        out += Story(trip.title, trip.items.first(), trip.items.size, Screen.Items(trip.title, Source.Auto(trip.key)), trip.items.map { it.id })
+    }
+    // De diciembre a febrero, el resumen del año que acaba o acaba de terminar.
+    val today = LocalDate.now()
+    if (today.monthValue == 12 || today.monthValue <= 2) {
+        val year = if (today.monthValue == 12) today.year else today.year - 1
+        val summary = summarize(state, year)
+        if (summary.highlights.size >= 8) {
+            val title = if (com.lumi.galeria.Lang.english) "Your $year" else "Tu $year"
+            out += Story(title, summary.highlights.last(), summary.highlights.size, Screen.YearReview(year), summary.highlights.map { it.id })
+        }
     }
     if (state.favorites.size >= 3) {
         val zone = ZoneId.systemDefault()
@@ -174,7 +200,7 @@ fun storiesOf(state: UiState): List<Story> {
         byMonth.entries.filter { it.value.size >= 3 }.maxByOrNull { it.key }?.let { (month, items) ->
             val name = groupTitle(month.atDay(1), Level.MONTH, today)
             val title = if (com.lumi.galeria.Lang.english) "Best of $name" else "Lo mejor de " + name.replaceFirstChar { it.lowercase() }
-            out += Story(title, items.first(), items.size, Screen.Items(title, Source.Ids(items.mapTo(HashSet()) { it.id })))
+            out += Story(title, items.first(), items.size, Screen.Items(title, Source.Ids(items.mapTo(HashSet()) { it.id })), items.map { it.id })
         }
     }
     return out

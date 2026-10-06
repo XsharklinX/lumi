@@ -29,7 +29,21 @@ data class MediaItem(
     val external: Uri? = null,
     /** Está en la tarjeta de memoria y no en la memoria interna del teléfono. */
     val onCard: Boolean = false,
+    /** Grados que hay que girar la imagen guardada para verla derecha (0, 90, 180 o 270). */
+    val rotation: Int = 0,
 ) {
+    /** Ancho y alto tal como se ve, ya girada. */
+    val shownWidth: Int get() = if (rotation % 180 == 0) width else height
+    val shownHeight: Int get() = if (rotation % 180 == 0) height else width
+
+    /** Formato según la extensión, en mayúsculas: JPG, HEIC, PNG, DNG, MP4… */
+    val format: String
+        get() = when (val ext = name.substringAfterLast('.', "").uppercase()) {
+            "JPEG" -> "JPG"
+            "HEIF" -> "HEIC"
+            else -> ext
+        }
+
     val uri: Uri
         get() = external ?: ContentUris.withAppendedId(
             if (isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
@@ -65,6 +79,8 @@ class Album(
     val hidden: Boolean = false,
     /** Fijado: va siempre al principio de la lista. */
     val pinned: Boolean = false,
+    /** Cuántos de sus elementos están en la tarjeta de memoria. */
+    val onCard: Int = 0,
 )
 
 enum class ItemSort(val label: String) {
@@ -72,7 +88,7 @@ enum class ItemSort(val label: String) {
 }
 
 enum class AlbumSort(val label: String) {
-    RECENT("Más recientes"), NAME("Nombre"), COUNT("Cantidad de fotos"),
+    RECENT("Más recientes"), NAME("Nombre"), COUNT("Cantidad de fotos"), MANUAL("A mano"),
 }
 
 fun sortItems(items: List<MediaItem>, sort: ItemSort): List<MediaItem> = when (sort) {
@@ -103,11 +119,13 @@ fun buildAlbums(
     sort: AlbumSort,
     pinned: Set<Long> = emptySet(),
     covers: Map<Long, Long> = emptyMap(),
+    /** Orden elegido a mano: los álbumes que no están, al final. */
+    order: List<Long> = emptyList(),
 ): List<Album> {
     val albums = items.groupBy { it.bucketId }.map { (id, list) ->
         // La portada es la foto que eligió el usuario, si sigue en el álbum; si no, la más reciente.
         val cover = covers[id]?.let { wanted -> list.firstOrNull { it.id == wanted } } ?: list[0]
-        Album(id, albumName(list[0].bucket), list[0].path, cover, list.size, id in locked, id in hidden, id in pinned)
+        Album(id, albumName(list[0].bucket), list[0].path, cover, list.size, id in locked, id in hidden, id in pinned, list.count { it.onCard })
     }
     val sorted = when (sort) {
         // La cámara siempre va primero en el orden por defecto.
@@ -116,6 +134,10 @@ fun buildAlbums(
         )
         AlbumSort.NAME -> albums.sortedBy { normalize(it.name) }
         AlbumSort.COUNT -> albums.sortedByDescending { it.count }
+        AlbumSort.MANUAL -> {
+            val place = order.withIndex().associate { it.value to it.index }
+            albums.sortedWith(compareBy<Album> { place[it.bucketId] ?: Int.MAX_VALUE }.thenByDescending { it.cover.date })
+        }
     }
     return sorted.sortedByDescending { it.pinned }
 }
@@ -141,6 +163,7 @@ fun loadLibrary(context: Context): Library {
         FileColumns.DATE_EXPIRES,
         FileColumns.BUCKET_ID,
         FileColumns.VOLUME_NAME,
+        FileColumns.ORIENTATION,
     )
     val args = Bundle().apply {
         putString(
@@ -172,6 +195,7 @@ fun loadLibrary(context: Context): Library {
                 expires = if (isTrashed) c.getLong(12) else 0,
                 // El almacenamiento interno se llama siempre igual; cualquier otro nombre es una tarjeta.
                 onCard = c.getString(14)?.let { it != MediaStore.VOLUME_EXTERNAL_PRIMARY } ?: false,
+                rotation = c.getInt(15),
             )
             if (isTrashed) trashed += item else active += item
         }
@@ -194,7 +218,7 @@ fun writeRequest(context: Context, items: List<MediaItem>): IntentSender =
 
 // ---------- Lo último que se vio ----------
 
-private const val SNAPSHOT_VERSION = 1
+private const val SNAPSHOT_VERSION = 2
 
 /**
  * Guarda la lista de fotos tal como quedó, para pintarla nada más abrir la app la próxima vez,
@@ -221,6 +245,7 @@ fun saveSnapshot(context: Context, items: List<MediaItem>) {
                 out.writeUTF(item.bucket.take(200))
                 out.writeUTF(item.path.take(400))
                 out.writeBoolean(item.onCard)
+                out.writeShort(item.rotation)
             }
         }
         temp.renameTo(java.io.File(context.filesDir, "biblioteca.bin"))
@@ -240,7 +265,7 @@ fun readSnapshot(context: Context): List<MediaItem>? = runCatching {
                 id = input.readLong(), isVideo = input.readBoolean(), name = input.readUTF(), date = input.readLong(),
                 modified = input.readLong(), size = input.readLong(), width = input.readInt(), height = input.readInt(),
                 duration = input.readLong(), bucketId = input.readLong(), bucket = input.readUTF(), path = input.readUTF(),
-                expires = 0, onCard = input.readBoolean(),
+                expires = 0, onCard = input.readBoolean(), rotation = input.readShort().toInt(),
             )
         }
         items

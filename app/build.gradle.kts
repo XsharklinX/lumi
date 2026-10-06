@@ -20,8 +20,8 @@ android {
         // Android 11: la papelera del sistema (createTrashRequest) existe desde aquí.
         minSdk = 30
         targetSdk = 36
-        versionCode = 800
-        versionName = "0.8.0"
+        versionCode = 920
+        versionName = "0.9.2"
         // Los modelos de reconocimiento traen código nativo por arquitectura. En Google Play cada
         // teléfono descarga solo la suya; x86_64 es para el emulador.
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
@@ -69,6 +69,10 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    // El modelo de caras se lee directamente del APK: no puede ir comprimido.
+    androidResources {
+        noCompress += "tflite"
+    }
     buildFeatures {
         compose = true
         buildConfig = true
@@ -104,5 +108,11 @@ dependencies {
     // descarga Google Play en el teléfono y el análisis se hace igualmente en el dispositivo.
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
     implementation("com.google.android.gms:play-services-mlkit-image-labeling:16.0.8")
+    // Escáner de documentos: encuentra la hoja, la endereza y la limpia. Lo instala Google Play.
+    implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1")
     implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
+    // Personas: encontrar las caras (ML Kit) y sacar la huella de cada una con un modelo pequeño
+    // (assets/caras.tflite). El motor que lo ejecuta lo pone Google Play, no va dentro de la app.
+    implementation("com.google.android.gms:play-services-mlkit-face-detection:17.1.0")
+    implementation("com.google.android.gms:play-services-tflite-java:16.4.0")
 }

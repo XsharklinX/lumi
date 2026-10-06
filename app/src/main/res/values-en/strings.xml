@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_description">One of your favorite photos, changing every hour.</string>
+    <string name="widget_photo_label">Lumi photo</string>
+    <string name="widget_memory_label">Lumi memories</string>
+    <string name="widget_memory_description">What you did on these days in other years.</string>
+</resources>

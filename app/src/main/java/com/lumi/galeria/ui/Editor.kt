@@ -1,5 +1,28 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
 package com.lumi.galeria.ui
 
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.runtime.rememberUpdatedState
+import com.google.mlkit.vision.segmentation.subject.SubjectSegmenterOptions
+import com.google.mlkit.vision.segmentation.subject.SubjectSegmentation
+import com.google.mlkit.vision.common.InputImage
+import com.google.android.gms.tasks.Tasks
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.border
+import androidx.compose.foundation.Image
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.graphics.Matrix
@@ -78,6 +101,7 @@ private const val MAX_SIDE = 4096
 private enum class Aspect(val label: String, val ratio: Float?) {
     FREE("Libre", null),
     SQUARE("1:1", 1f),
+    FOUR_FIVE("4:5", 4f / 5f),
     FOUR_THREE("4:3", 4f / 3f),
     THREE_FOUR("3:4", 3f / 4f),
     THREE_TWO("3:2", 3f / 2f),
@@ -136,6 +160,8 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
     var saturation by remember { mutableFloatStateOf(0f) }
     var warmth by remember { mutableFloatStateOf(0f) }
     var look by remember { mutableStateOf(Look.NONE) }
+    // Cuánto se nota el filtro, de 0 a 1.
+    var lookStrength by remember { mutableFloatStateOf(1f) }
     // Efectos: espejo, bordes oscurecidos, negros lavados y giro de tono.
     var flip by remember { mutableStateOf(false) }
     var vignette by remember { mutableFloatStateOf(0f) }
@@ -145,12 +171,39 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
     // A su izquierda se ve la foto original y a su derecha, con los cambios.
     var split by remember { mutableStateOf<Float?>(null) }
     var saveMenu by remember { mutableStateOf(false) }
-    val tone = remember(brightness, contrast, saturation, warmth, look, fade, hue) {
-        toneMatrix(brightness, contrast, saturation, warmth, look, fade, hue)
+    val tone = remember(brightness, contrast, saturation, warmth, look, fade, hue, lookStrength) {
+        toneMatrix(brightness, contrast, saturation, warmth, look, fade, hue, lookStrength)
     }
     val toned = brightness != 0f || contrast != 0f || saturation != 0f || warmth != 0f || look != Look.NONE || fade != 0f || hue != 0f
 
     val source = bitmap
+    // Perspectiva: cuánto se enderezan las líneas que convergen, en vertical y en horizontal.
+    var keyV by remember { mutableFloatStateOf(0f) }
+    var keyH by remember { mutableFloatStateOf(0f) }
+    var perspective by remember { mutableStateOf(false) }
+    var framing by remember { mutableStateOf(false) }
+    // Mientras se ajusta, se trabaja sobre una copia reducida: la foto completa solo al guardar.
+    val preview = remember(source) {
+        source?.let { s ->
+            val longSide = maxOf(s.width, s.height)
+            if (longSide <= 1400) s else Bitmap.createScaledBitmap(s, s.width * 1400 / longSide, s.height * 1400 / longSide, true)
+        }
+    }
+    // Curvas, tonos por gama, sombras y luces, nitidez, ruido y grano: se calculan píxel a píxel.
+    var pro by remember { mutableStateOf(com.lumi.galeria.data.Develop()) }
+    val shaped by produceState<Bitmap?>(null, preview, keyV, keyH, pro) {
+        val p = preview ?: return@produceState
+        // Un respiro: mientras se arrastra un control no se recalcula cada milímetro.
+        kotlinx.coroutines.delay(60)
+        value = withContext(Dispatchers.Default) {
+            val straight = if (keyV == 0f && keyH == 0f) p else keystone(p, keyV, keyH)
+            com.lumi.galeria.data.develop(straight, pro)
+        }
+    }
+    val histogram = remember(preview) { preview?.let { com.lumi.galeria.data.histogram(it) } }
+    val prefsLooks = remember { context.getSharedPreferences("editor", android.content.Context.MODE_PRIVATE) }
+    var savedLooks by remember { mutableStateOf(readLooks(prefsLooks)) }
+    var naming by remember { mutableStateOf(false) }
     val frameW = if (source == null) 1f else if (quarter % 2 == 0) source.width.toFloat() else source.height.toFloat()
     val frameH = if (source == null) 1f else if (quarter % 2 == 0) source.height.toFloat() else source.width.toFloat()
 
@@ -169,14 +222,85 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
         crop = Rect((1 - w) / 2, (1 - h) / 2, (1 + w) / 2, (1 + h) / 2)
     }
 
-    val changed = quarter != 0 || angle != 0f || crop != FULL || toned || flip || vignette != 0f
+    val changed = quarter != 0 || angle != 0f || crop != FULL || toned || flip || vignette != 0f || keyV != 0f || keyH != 0f || !pro.isIdentity
+
+    /** Los ajustes de color de ahora, para guardarlos como filtro propio. */
+    fun currentLook(): org.json.JSONObject = org.json.JSONObject().apply {
+        put("brillo", brightness.toDouble()); put("contraste", contrast.toDouble()); put("color", saturation.toDouble())
+        put("calidez", warmth.toDouble()); put("filtro", look.name); put("intensidad", lookStrength.toDouble())
+        put("desvanecer", fade.toDouble()); put("tono", hue.toDouble()); put("vineta", vignette.toDouble())
+        put("pro", developToJson(pro))
+    }
+
+    fun applyLook(values: org.json.JSONObject) {
+        brightness = values.optDouble("brillo", 0.0).toFloat()
+        contrast = values.optDouble("contraste", 0.0).toFloat()
+        saturation = values.optDouble("color", 0.0).toFloat()
+        warmth = values.optDouble("calidez", 0.0).toFloat()
+        look = runCatching { Look.valueOf(values.optString("filtro", "NONE")) }.getOrDefault(Look.NONE)
+        lookStrength = values.optDouble("intensidad", 1.0).toFloat()
+        fade = values.optDouble("desvanecer", 0.0).toFloat()
+        hue = values.optDouble("tono", 0.0).toFloat()
+        vignette = values.optDouble("vineta", 0.0).toFloat()
+        pro = values.optJSONObject("pro")?.let { developFromJson(it) } ?: com.lumi.galeria.data.Develop()
+    }
+
+    /** Propone un recorte centrado en lo principal de la foto, con un poco de aire alrededor. */
+    fun autoFrame() {
+        val bmp = preview ?: return
+        framing = true
+        scope.launch {
+            val found = withContext(Dispatchers.Default) { runCatching { subjectBox(bmp) }.getOrNull() }
+            framing = false
+            if (found == null) {
+                vm.say("No se encontró nada principal que encuadrar")
+                return@launch
+            }
+            // De la foto original al marco tal como está girado.
+            val r = when (quarter) {
+                1 -> Rect(1 - found.bottom, found.left, 1 - found.top, found.right)
+                2 -> Rect(1 - found.right, 1 - found.bottom, 1 - found.left, 1 - found.top)
+                3 -> Rect(found.top, 1 - found.right, found.bottom, 1 - found.left)
+                else -> found
+            }.let { if (flip) Rect(1 - it.right, it.top, 1 - it.left, it.bottom) else it }
+            var left = r.left - r.width * 0.15f
+            var right = r.right + r.width * 0.15f
+            var top = r.top - r.height * 0.15f
+            var bottom = r.bottom + r.height * 0.15f
+            // Con proporción fija se amplía el lado que se queda corto.
+            aspect.ratio?.let { ratio ->
+                val wantH = lockedHeight(right - left, ratio)
+                if (wantH > bottom - top) {
+                    val extra = (wantH - (bottom - top)) / 2
+                    top -= extra
+                    bottom += extra
+                } else {
+                    val extra = ((bottom - top) / lockedHeight(1f, ratio) - (right - left)) / 2
+                    left -= extra
+                    right += extra
+                }
+            }
+            // Lo que se sale del marco se mete dentro.
+            fun fit(a: Float, b: Float): Pair<Float, Float> {
+                val size = minOf(b - a, 1f)
+                val start = a.coerceIn(0f, 1f - size)
+                return start to start + size
+            }
+            val (l, rr) = fit(left, right)
+            val (t, bb) = fit(top, bottom)
+            crop = Rect(l, t, rr, bb)
+        }
+    }
 
     fun save(replace: Boolean) {
         val bmp = source ?: return
         saving = true
         scope.launch {
             val result = withContext(Dispatchers.Default) {
-                runCatching { render(bmp, quarter, angle, crop, if (toned) tone else null, flip, vignette) }.getOrNull()
+                runCatching {
+                    val straight = if (keyV != 0f || keyH != 0f) keystone(bmp, keyV, keyH) else bmp
+                    render(com.lumi.galeria.data.develop(straight, pro), quarter, angle, crop, if (toned) tone else null, flip, vignette)
+                }.getOrNull()
             }
             when {
                 result == null -> vm.say("No hay memoria suficiente para esta foto")
@@ -205,7 +329,9 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
             when {
                 failed -> EmptyMessage("No se puede editar esta foto", "El formato no se deja abrir.")
                 source != null -> {
-                    val image = remember(source) { source.asImageBitmap() }
+                    val image = remember(shaped, source) { (shaped ?: source).asImageBitmap() }
+                    // Para el «antes»: sin curvas, tonos ni detalle.
+                    val original = remember(preview) { preview?.asImageBitmap() }
                     var view by remember { mutableStateOf(IntSize.Zero) }
                     var grab by remember { mutableStateOf(Grab.NONE) }
 
@@ -286,7 +412,7 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                                     if (flip) scale(-1f, 1f, f.center)
                                 }) {
                                     drawImage(
-                                        image,
+                                        original ?: image,
                                         dstOffset = IntOffset((f.center.x - drawnW / 2).roundToInt(), (f.center.y - drawnH / 2).roundToInt()),
                                         dstSize = IntSize(drawnW.roundToInt(), drawnH.roundToInt()),
                                     )
@@ -324,6 +450,43 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                         listOf(box.topLeft, box.topRight, box.bottomLeft, box.bottomRight).forEach {
                             drawCircle(Lumi.Accent, 8.dp.toPx(), it)
                         }
+                        // Lupa: la esquina que se arrastra, ampliada en un círculo, al lado contrario del dedo.
+                        val corner = when (grab) {
+                            Grab.TOP_LEFT -> box.topLeft
+                            Grab.TOP_RIGHT -> box.topRight
+                            Grab.BOTTOM_LEFT -> box.bottomLeft
+                            Grab.BOTTOM_RIGHT -> box.bottomRight
+                            else -> null
+                        }
+                        if (corner != null) {
+                            val r = 54.dp.toPx()
+                            val margin = r + 10.dp.toPx()
+                            val at = Offset(if (corner.x < size.width / 2) size.width - margin else margin, margin)
+                            clipPath(Path().apply { addOval(Rect(at, r)) }) {
+                                drawRect(Color.Black, Offset(at.x - r, at.y - r), Size(2 * r, 2 * r))
+                                withTransform({
+                                    translate(at.x - corner.x, at.y - corner.y)
+                                    scale(3f, 3f, corner)
+                                }) {
+                                    clipRect(f.left, f.top, f.right, f.bottom) {
+                                        withTransform({
+                                            rotate(quarter * 90f + angle, f.center)
+                                            scale(coverScale(angle, frameW, frameH), f.center)
+                                            if (flip) scale(-1f, 1f, f.center)
+                                        }) {
+                                            drawImage(
+                                                image,
+                                                dstOffset = IntOffset((f.center.x - drawnW / 2).roundToInt(), (f.center.y - drawnH / 2).roundToInt()),
+                                                dstSize = IntSize(drawnW.roundToInt(), drawnH.roundToInt()),
+                                                colorFilter = if (toned) ColorFilter.colorMatrix(ColorMatrix(tone)) else null,
+                                            )
+                                        }
+                                    }
+                                    drawRect(Color.White, box.topLeft, box.size, style = Stroke(0.6.dp.toPx()))
+                                }
+                            }
+                            drawCircle(Color.White, r, at, style = Stroke(2.dp.toPx()))
+                        }
                         if (cut != null) {
                             drawLine(Color.White, Offset(cut, f.top), Offset(cut, f.bottom), 2.dp.toPx())
                             drawCircle(Color.White, 13.dp.toPx(), Offset(cut, f.center.y))
@@ -344,15 +507,23 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
         Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             when (tab) {
                 0 -> {
-                    Tuner("Enderezar", angle, -30f..30f, "%.1f°") { angle = if (abs(it) < 0.4f) 0f else it }
+                    Dial(angle) { angle = it }
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
+                        Aspect.entries.forEach { option -> ShapeChip(option, aspect == option) { applyAspect(option) } }
+                    }
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Chip(if (framing) "Buscando…" else "Encuadre auto", false) { if (!framing) autoFrame() }
+                        Chip("Perspectiva", perspective || keyV != 0f || keyH != 0f) { perspective = !perspective }
                         Chip("Girar 90°", false) {
                             quarter = (quarter + 1) % 4
                             crop = FULL
                             aspect = Aspect.FREE
                         }
                         Chip("Espejo", flip) { flip = !flip }
-                        Aspect.entries.forEach { option -> Chip(option.label, aspect == option) { applyAspect(option) } }
+                    }
+                    if (perspective) {
+                        Tuner("Vertical", keyV * 100, -100f..100f, "%.0f") { keyV = snap(it) / 100 }
+                        Tuner("Horizontal", keyH * 100, -100f..100f, "%.0f") { keyH = snap(it) / 100 }
                     }
                 }
                 1 -> {
@@ -360,9 +531,93 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                     Tuner("Contraste", contrast * 100, -100f..100f, "%.0f") { contrast = snap(it) / 100 }
                     Tuner("Color", saturation * 100, -100f..100f, "%.0f") { saturation = snap(it) / 100 }
                     Tuner("Calidez", warmth * 100, -100f..100f, "%.0f") { warmth = snap(it) / 100 }
+                    Tuner("Sombras", pro.shadows * 100, -100f..100f, "%.0f") { pro = pro.copy(shadows = snap(it) / 100) }
+                    Tuner("Luces", pro.highlights * 100, -100f..100f, "%.0f") { pro = pro.copy(highlights = snap(it) / 100) }
                 }
-                2 -> Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Look.entries.forEach { option -> Chip(option.label, look == option) { look = option } }
+                2 -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    // Cada filtro, aplicado a una miniatura de la propia foto.
+                    val thumb = remember(preview) {
+                        preview?.let { s ->
+                            val k = 160f / maxOf(s.width, s.height)
+                            Bitmap.createScaledBitmap(s, (s.width * k).toInt().coerceAtLeast(1), (s.height * k).toInt().coerceAtLeast(1), true).asImageBitmap()
+                        }
+                    }
+                    // Los filtros propios, primero. Mantener pulsado uno lo borra.
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Chip("Guardar mis ajustes como filtro", false) { naming = true }
+                        savedLooks.forEach { saved ->
+                            Text(
+                                saved.name, style = LabelStyle, color = Lumi.OnAccent,
+                                modifier = Modifier.clip(CircleShape).background(Lumi.Accent)
+                                    .combinedClickable(
+                                        onClick = { applyLook(saved.values) },
+                                        onLongClick = {
+                                            savedLooks = savedLooks.filter { it !== saved }
+                                            writeLooks(prefsLooks, savedLooks)
+                                            vm.say("Filtro «${saved.name}» borrado")
+                                        },
+                                    )
+                                    .padding(horizontal = 14.dp, vertical = 9.dp),
+                            )
+                        }
+                    }
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Look.entries.forEach { option ->
+                            val on = look == option
+                            Column(
+                                Modifier.clip(RoundedCornerShape(12.dp)).clickable {
+                                    look = option
+                                    lookStrength = 1f
+                                },
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                val matrix = remember(option) { toneMatrix(0f, 0f, 0f, 0f, option, 0f, 0f) }
+                                if (thumb != null) {
+                                    Image(
+                                        thumb, null,
+                                        contentScale = ContentScale.Crop,
+                                        colorFilter = ColorFilter.colorMatrix(ColorMatrix(matrix)),
+                                        modifier = Modifier.size(64.dp).clip(RoundedCornerShape(12.dp))
+                                            .then(if (on) Modifier.border(2.5.dp, Lumi.Accent, RoundedCornerShape(12.dp)) else Modifier),
+                                    )
+                                }
+                                Text(option.label, style = SmallStyle, color = if (on) Lumi.Accent else Lumi.Ink)
+                            }
+                        }
+                    }
+                    if (look != Look.NONE) Tuner("Intensidad", lookStrength * 100, 0f..100f, "%.0f") { lookStrength = it / 100 }
+                }
+                4 -> {
+                    var channel by remember { mutableStateOf(com.lumi.galeria.data.Channel.ALL) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        com.lumi.galeria.data.Channel.entries.forEach { option -> Chip(option.label, channel == option) { channel = option } }
+                    }
+                    CurveEditor(pro.curve(channel), channel, histogram) { next -> pro = pro.copy(curves = pro.curves + (channel to next)) }
+                    Text("Arrastra la línea para cambiarla; toca dos veces un punto para quitarlo.", style = SmallStyle)
+                }
+                5 -> {
+                    var band by remember { mutableStateOf(com.lumi.galeria.data.Band.BLUE) }
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        com.lumi.galeria.data.Band.entries.forEach { option ->
+                            val touched = pro.bands[option]?.isZero == false
+                            Box(
+                                Modifier.size(if (band == option) 34.dp else 28.dp).clip(CircleShape).background(Color(option.swatch))
+                                    .border(2.dp, if (band == option) Lumi.Ink else if (touched) Lumi.Accent else Color.Transparent, CircleShape)
+                                    .clickable { band = option },
+                            )
+                        }
+                    }
+                    val shift = pro.bands[band] ?: com.lumi.galeria.data.BandShift()
+                    Text(band.label, style = LabelStyle)
+                    Tuner("Tono", shift.hue * 100, -100f..100f, "%.0f") { pro = pro.copy(bands = pro.bands + (band to shift.copy(hue = snap(it) / 100))) }
+                    Tuner("Saturación", shift.saturation * 100, -100f..100f, "%.0f") { pro = pro.copy(bands = pro.bands + (band to shift.copy(saturation = snap(it) / 100))) }
+                    Tuner("Luminosidad", shift.lightness * 100, -100f..100f, "%.0f") { pro = pro.copy(bands = pro.bands + (band to shift.copy(lightness = snap(it) / 100))) }
+                }
+                6 -> {
+                    Tuner("Nitidez", pro.sharpen * 100, 0f..100f, "%.0f") { pro = pro.copy(sharpen = it / 100) }
+                    Tuner("Quitar ruido", pro.denoise * 100, 0f..100f, "%.0f") { pro = pro.copy(denoise = it / 100) }
+                    Tuner("Grano", pro.grain * 100, 0f..100f, "%.0f") { pro = pro.copy(grain = it / 100) }
                 }
                 else -> {
                     Tuner("Viñeta", vignette * 100, 0f..100f, "%.0f") { vignette = it / 100 }
@@ -381,7 +636,7 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                         tab = 1
                     }
                 }
-                listOf("Recortar", "Luz y color", "Filtros", "Efectos").forEachIndexed { i, label -> Chip(label, tab == i) { tab = i } }
+                listOf("Recortar", "Luz y color", "Filtros", "Efectos", "Curvas", "Tonos", "Detalle").forEachIndexed { i, label -> Chip(label, tab == i) { tab = i } }
                 Chip("Antes y después", split != null) { split = if (split == null) 0.5f else null }
                 Text(
                     "Deshacer todo",
@@ -401,9 +656,167 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                         vignette = 0f
                         fade = 0f
                         hue = 0f
+                        keyV = 0f
+                        keyH = 0f
+                        lookStrength = 1f
+                        pro = com.lumi.galeria.data.Develop()
                     }.padding(horizontal = 14.dp, vertical = 11.dp),
                 )
             }
+        }
+    }
+
+    if (naming) {
+        var name by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { naming = false },
+            containerColor = Lumi.Surface,
+            title = { Text("Nombre del filtro", style = HeadingStyle) },
+            text = { OutlinedTextField(name, { name = it.take(24) }, singleLine = true, shape = RoundedCornerShape(16.dp), placeholder = { Text("Mi filtro") }) },
+            confirmButton = {
+                Text(
+                    "Guardar", style = LabelStyle, color = if (name.isBlank()) Lumi.Muted else Lumi.Accent,
+                    modifier = Modifier.clip(CircleShape).clickable(enabled = name.isNotBlank()) {
+                        savedLooks = savedLooks.filter { it.name != name.trim() } + com.lumi.galeria.data.SavedLook(name.trim(), currentLook())
+                        writeLooks(prefsLooks, savedLooks)
+                        naming = false
+                        vm.say("Filtro guardado. Lo tienes en «Filtros» para cualquier foto.")
+                    }.padding(12.dp),
+                )
+            },
+            dismissButton = {
+                Text("Cancelar", style = LabelStyle, color = Lumi.Muted, modifier = Modifier.clip(CircleShape).clickable { naming = false }.padding(12.dp))
+            },
+        )
+    }
+}
+
+private fun readLooks(prefs: android.content.SharedPreferences): List<com.lumi.galeria.data.SavedLook> = runCatching {
+    val array = org.json.JSONArray(prefs.getString("filtros", "[]"))
+    (0 until array.length()).map { i ->
+        val o = array.getJSONObject(i)
+        com.lumi.galeria.data.SavedLook(o.getString("nombre"), o.getJSONObject("valores"))
+    }
+}.getOrDefault(emptyList())
+
+private fun writeLooks(prefs: android.content.SharedPreferences, looks: List<com.lumi.galeria.data.SavedLook>) {
+    val array = org.json.JSONArray()
+    looks.forEach { array.put(org.json.JSONObject().put("nombre", it.name).put("valores", it.values)) }
+    prefs.edit().putString("filtros", array.toString()).apply()
+}
+
+private fun developToJson(d: com.lumi.galeria.data.Develop): org.json.JSONObject = org.json.JSONObject().apply {
+    put("sombras", d.shadows.toDouble()); put("luces", d.highlights.toDouble())
+    put("nitidez", d.sharpen.toDouble()); put("ruido", d.denoise.toDouble()); put("grano", d.grain.toDouble())
+    put("curvas", org.json.JSONObject().apply {
+        d.curves.forEach { (channel, curve) ->
+            put(channel.name, org.json.JSONArray().apply { curve.points.forEach { put(it.first.toDouble()); put(it.second.toDouble()) } })
+        }
+    })
+    put("gamas", org.json.JSONObject().apply {
+        d.bands.forEach { (band, s) -> put(band.name, org.json.JSONArray().put(s.hue.toDouble()).put(s.saturation.toDouble()).put(s.lightness.toDouble())) }
+    })
+}
+
+private fun developFromJson(o: org.json.JSONObject): com.lumi.galeria.data.Develop {
+    val curves = HashMap<com.lumi.galeria.data.Channel, com.lumi.galeria.data.Curve>()
+    o.optJSONObject("curvas")?.let { c ->
+        c.keys().forEach { key ->
+            val channel = runCatching { com.lumi.galeria.data.Channel.valueOf(key) }.getOrNull() ?: return@forEach
+            val a = c.getJSONArray(key)
+            curves[channel] = com.lumi.galeria.data.Curve((0 until a.length() / 2).map { a.getDouble(it * 2).toFloat() to a.getDouble(it * 2 + 1).toFloat() })
+        }
+    }
+    val bands = HashMap<com.lumi.galeria.data.Band, com.lumi.galeria.data.BandShift>()
+    o.optJSONObject("gamas")?.let { g ->
+        g.keys().forEach { key ->
+            val band = runCatching { com.lumi.galeria.data.Band.valueOf(key) }.getOrNull() ?: return@forEach
+            val a = g.getJSONArray(key)
+            bands[band] = com.lumi.galeria.data.BandShift(a.getDouble(0).toFloat(), a.getDouble(1).toFloat(), a.getDouble(2).toFloat())
+        }
+    }
+    return com.lumi.galeria.data.Develop(
+        curves, bands, o.optDouble("sombras", 0.0).toFloat(), o.optDouble("luces", 0.0).toFloat(),
+        o.optDouble("nitidez", 0.0).toFloat(), o.optDouble("ruido", 0.0).toFloat(), o.optDouble("grano", 0.0).toFloat(),
+    )
+}
+
+/**
+ * La curva de un canal sobre el histograma de la foto. Arrastrar cerca de un punto lo mueve;
+ * en otro sitio, crea uno nuevo en la línea. Dos toques sobre un punto lo quitan.
+ */
+@Composable
+private fun CurveEditor(curve: com.lumi.galeria.data.Curve, channel: com.lumi.galeria.data.Channel, histogram: FloatArray?, onChange: (com.lumi.galeria.data.Curve) -> Unit) {
+    val line = when (channel) {
+        com.lumi.galeria.data.Channel.ALL -> Lumi.Ink
+        com.lumi.galeria.data.Channel.RED -> Color(0xFFFF5A5A)
+        com.lumi.galeria.data.Channel.GREEN -> Color(0xFF5BC48A)
+        com.lumi.galeria.data.Channel.BLUE -> Color(0xFF4F8DF7)
+    }
+    val current by rememberUpdatedState(curve)
+    val change by rememberUpdatedState(onChange)
+    val table = remember(curve) { curve.table() }
+    Canvas(
+        Modifier
+            .fillMaxWidth()
+            .height(150.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Lumi.Bg)
+            .pointerInput(channel) {
+                detectTapGestures(onDoubleTap = { tap ->
+                    val pts = current.points.sortedBy { it.first }
+                    val hit = pts.indexOfFirst { hypot(it.first * size.width - tap.x, (1 - it.second) * size.height - tap.y) < 28.dp.toPx() }
+                    if (hit in 1 until pts.lastIndex) change(com.lumi.galeria.data.Curve(pts.filterIndexed { i, _ -> i != hit }))
+                })
+            }
+            .pointerInput(channel) {
+                var moving = -1
+                detectDragGestures(
+                    onDragStart = { start ->
+                        val pts = current.points.sortedBy { it.first }
+                        moving = pts.indexOfFirst { hypot(it.first * size.width - start.x, (1 - it.second) * size.height - start.y) < 28.dp.toPx() }
+                        if (moving < 0) {
+                            val x = (start.x / size.width).coerceIn(0.02f, 0.98f)
+                            val next = (pts + (x to (1 - start.y / size.height).coerceIn(0f, 1f))).sortedBy { it.first }
+                            moving = next.indexOfFirst { it.first == x }
+                            change(com.lumi.galeria.data.Curve(next))
+                        }
+                    },
+                    onDragEnd = { moving = -1 },
+                ) { pointer, _ ->
+                    pointer.consume()
+                    val pts = current.points.sortedBy { it.first }.toMutableList()
+                    if (moving !in pts.indices) return@detectDragGestures
+                    val y = (1 - pointer.position.y / size.height).coerceIn(0f, 1f)
+                    // Los extremos solo suben y bajan; los demás no pueden saltarse a sus vecinos.
+                    val x = when (moving) {
+                        0 -> 0f
+                        pts.lastIndex -> 1f
+                        else -> (pointer.position.x / size.width).coerceIn(pts[moving - 1].first + 0.03f, pts[moving + 1].first - 0.03f)
+                    }
+                    pts[moving] = x to y
+                    change(com.lumi.galeria.data.Curve(pts))
+                }
+            },
+    ) {
+        histogram?.let { bins ->
+            val bw = size.width / bins.size
+            bins.forEachIndexed { i, v -> drawRect(Lumi.Line, Offset(i * bw, size.height * (1 - v)), Size(bw, size.height * v)) }
+        }
+        for (i in 1..3) {
+            drawLine(Lumi.Line, Offset(size.width * i / 4, 0f), Offset(size.width * i / 4, size.height))
+            drawLine(Lumi.Line, Offset(0f, size.height * i / 4), Offset(size.width, size.height * i / 4))
+        }
+        val path = Path()
+        for (v in 0..255) {
+            val x = v / 255f * size.width
+            val y = (1 - table[v] / 255f) * size.height
+            if (v == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        drawPath(path, line, style = Stroke(2.5.dp.toPx()))
+        curve.points.forEach { (x, y) ->
+            drawCircle(Color.White, 7.dp.toPx(), Offset(x * size.width, (1 - y) * size.height))
+            drawCircle(line, 4.dp.toPx(), Offset(x * size.width, (1 - y) * size.height))
         }
     }
 }
@@ -460,7 +873,7 @@ private enum class Look(val label: String) {
 }
 
 /** Matriz de color 4x5 que resume los ajustes y el filtro; sirve igual para la vista previa y para guardar. */
-private fun toneMatrix(brightness: Float, contrast: Float, saturation: Float, warmth: Float, look: Look, fade: Float, hue: Float): FloatArray {
+private fun toneMatrix(brightness: Float, contrast: Float, saturation: Float, warmth: Float, look: Look, fade: Float, hue: Float, lookStrength: Float = 1f): FloatArray {
     fun levels(scale: Float, shift: Float) = android.graphics.ColorMatrix(
         floatArrayOf(scale, 0f, 0f, 0f, shift, 0f, scale, 0f, 0f, shift, 0f, 0f, scale, 0f, shift, 0f, 0f, 0f, 1f, 0f),
     )
@@ -496,27 +909,34 @@ private fun toneMatrix(brightness: Float, contrast: Float, saturation: Float, wa
             ),
         )
     }
+    // El filtro se arma aparte para poder suavizarlo con la intensidad.
+    val lookMatrix = android.graphics.ColorMatrix()
     when (look) {
         Look.NONE -> Unit
         Look.VIVID -> {
-            matrix.postConcat(android.graphics.ColorMatrix().apply { setSaturation(1.35f) })
-            matrix.postConcat(levels(1.1f, -12f))
+            lookMatrix.postConcat(android.graphics.ColorMatrix().apply { setSaturation(1.35f) })
+            lookMatrix.postConcat(levels(1.1f, -12f))
         }
-        Look.WARM -> matrix.postConcat(tint(1.12f, 0.88f))
-        Look.COOL -> matrix.postConcat(tint(0.9f, 1.1f))
+        Look.WARM -> lookMatrix.postConcat(tint(1.12f, 0.88f))
+        Look.COOL -> lookMatrix.postConcat(tint(0.9f, 1.1f))
         Look.FADED -> {
-            matrix.postConcat(android.graphics.ColorMatrix().apply { setSaturation(0.7f) })
-            matrix.postConcat(levels(0.88f, 24f))
+            lookMatrix.postConcat(android.graphics.ColorMatrix().apply { setSaturation(0.7f) })
+            lookMatrix.postConcat(levels(0.88f, 24f))
         }
-        Look.MONO -> matrix.postConcat(android.graphics.ColorMatrix().apply { setSaturation(0f) })
+        Look.MONO -> lookMatrix.postConcat(android.graphics.ColorMatrix().apply { setSaturation(0f) })
         Look.SEPIA -> {
-            matrix.postConcat(android.graphics.ColorMatrix().apply { setSaturation(0f) })
-            matrix.postConcat(
+            lookMatrix.postConcat(android.graphics.ColorMatrix().apply { setSaturation(0f) })
+            lookMatrix.postConcat(
                 android.graphics.ColorMatrix(
                     floatArrayOf(1.07f, 0f, 0f, 0f, 0f, 0f, 0.95f, 0f, 0f, 0f, 0f, 0f, 0.78f, 0f, 0f, 0f, 0f, 0f, 1f, 0f),
                 ),
             )
         }
+    }
+    if (look != Look.NONE) {
+        val l = lookMatrix.array
+        val identity = android.graphics.ColorMatrix().array
+        matrix.postConcat(android.graphics.ColorMatrix(FloatArray(20) { identity[it] + (l[it] - identity[it]) * lookStrength }))
     }
     return matrix.array.copyOf()
 }
@@ -606,4 +1026,120 @@ private fun render(source: Bitmap, quarter: Int, angle: Float, crop: Rect, tone:
     }
     if (base !== source) base.recycle()
     return out
+}
+
+/**
+ * Rueda graduada para enderezar: se arrastra de lado y cada raya es un grado. Al pasar por el
+ * cero se queda en él, con un toque de vibración.
+ */
+@Composable
+private fun Dial(angle: Float, onChange: (Float) -> Unit) {
+    val current by rememberUpdatedState(angle)
+    val haptic = LocalHapticFeedback.current
+    val accent = Lumi.Accent
+    val ink = Lumi.Muted
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+        Text(String.format(Locale.US, "%.1f°", angle), style = LabelStyle, color = if (angle == 0f) Lumi.Muted else Lumi.Accent)
+        Canvas(
+            Modifier.fillMaxWidth().height(40.dp).pointerInput(Unit) {
+                detectHorizontalDragGestures { change, dx ->
+                    change.consume()
+                    val next = (current - dx / 9.dp.toPx()).coerceIn(-45f, 45f)
+                    val crossed = current != 0f && (current > 0f) != (next > 0f)
+                    if (crossed || (current != 0f && abs(next) < 0.3f)) {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onChange(0f)
+                    } else {
+                        onChange(next)
+                    }
+                }
+            },
+        ) {
+            val step = 9.dp.toPx()
+            val cx = size.width / 2
+            for (deg in -45..45) {
+                val x = cx + (deg - current) * step
+                if (x < 0f || x > size.width) continue
+                val major = deg % 5 == 0
+                val fade = (1f - abs(x - cx) / cx * 0.85f).coerceIn(0.1f, 1f)
+                drawLine(
+                    ink.copy(alpha = fade),
+                    Offset(x, size.height - (if (major) 20.dp else 11.dp).toPx()),
+                    Offset(x, size.height),
+                    strokeWidth = (if (deg == 0) 2.dp else 1.dp).toPx(),
+                )
+            }
+            drawLine(accent, Offset(cx, 2.dp.toPx()), Offset(cx, size.height), strokeWidth = 2.5.dp.toPx())
+        }
+    }
+}
+
+/** Proporción del recorte, dibujada con su forma. */
+@Composable
+private fun ShapeChip(option: Aspect, on: Boolean, onClick: () -> Unit) {
+    val tint = if (on) Lumi.Accent else Lumi.Muted
+    val ratio = option.ratio
+    val w = when {
+        ratio == null -> 20.dp
+        ratio >= 1f -> 22.dp
+        else -> 22.dp * ratio
+    }
+    val h = when {
+        ratio == null -> 16.dp
+        ratio >= 1f -> 22.dp / ratio
+        else -> 22.dp
+    }
+    Column(
+        Modifier.clip(RoundedCornerShape(12.dp)).background(if (on) Lumi.Accent.copy(alpha = 0.14f) else Color.Transparent)
+            .clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Box(Modifier.size(28.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(width = w, height = h).border(1.8.dp, tint, RoundedCornerShape(3.dp)))
+        }
+        Text(option.label, style = SmallStyle, color = tint)
+    }
+}
+
+/**
+ * Corrige la perspectiva: [vertical] endereza las líneas que se juntan hacia arriba (o hacia
+ * abajo, si es negativo), como los edificios fotografiados desde el suelo; [horizontal], las que
+ * se juntan hacia un lado. Van de -1 a 1.
+ */
+private fun keystone(source: Bitmap, vertical: Float, horizontal: Float): Bitmap {
+    val w = source.width.toFloat()
+    val h = source.height.toFloat()
+    val a = maxOf(vertical, 0f) * 0.3f
+    val b = maxOf(-vertical, 0f) * 0.3f
+    val c = maxOf(horizontal, 0f) * 0.3f
+    val d = maxOf(-horizontal, 0f) * 0.3f
+    // Puntos de la foto que pasan a ser las esquinas: el trapecio se estira hasta el rectángulo.
+    val from = floatArrayOf(w * a, h * c, w - w * a, h * d, w - w * b, h - h * d, w * b, h - h * c)
+    val to = floatArrayOf(0f, 0f, w, 0f, w, h, 0f, h)
+    val matrix = Matrix().apply { setPolyToPoly(from, 0, to, 0, 4) }
+    val out = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+    android.graphics.Canvas(out).drawBitmap(source, matrix, Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
+    return out
+}
+
+/** Dónde está lo principal de la foto (persona, animal u objeto), en proporciones; null si nada destaca. */
+private fun subjectBox(bitmap: Bitmap): Rect? {
+    val segmenter = SubjectSegmentation.getClient(SubjectSegmenterOptions.Builder().enableForegroundConfidenceMask().build())
+    val mask = Tasks.await(segmenter.process(InputImage.fromBitmap(bitmap, 0))).foregroundConfidenceMask ?: return null
+    mask.rewind()
+    var left = bitmap.width
+    var top = bitmap.height
+    var right = -1
+    var bottom = -1
+    for (y in 0 until bitmap.height) for (x in 0 until bitmap.width) {
+        if (mask.get() > 0.5f) {
+            if (x < left) left = x
+            if (x > right) right = x
+            if (y < top) top = y
+            if (y > bottom) bottom = y
+        }
+    }
+    if (right < left || bottom < top) return null
+    return Rect(left.toFloat() / bitmap.width, top.toFloat() / bitmap.height, (right + 1f) / bitmap.width, (bottom + 1f) / bitmap.height)
 }

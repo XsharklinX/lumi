@@ -39,12 +39,26 @@ class IndexEntry(
     val pending: Boolean = false,
     /** Color medio de la foto, opaco. 0 si aún no se ha calculado; [COLOR_NONE] si no se pudo. */
     val color: Int = 0,
+    /** Móvil o cámara con que se hizo, ya con un nombre legible. Vacío si no consta; null si aún no se ha mirado. */
+    val camera: String? = null,
+    /** [FLAG_FLASH], [FLAG_FRONT] y [FLAG_MOTION]. */
+    val flags: Int = 0,
 ) {
+    val flash: Boolean get() = flags and FLAG_FLASH != 0
+    val front: Boolean get() = flags and FLAG_FRONT != 0
+    val motion: Boolean get() = flags and FLAG_MOTION != 0
+
     val hasPlace: Boolean get() = lat < 900f
 
     /** El texto sin tildes ni mayúsculas, que es como se busca en él. */
     val plainText: String by lazy(LazyThreadSafetyMode.PUBLICATION) { normalize(text) }
 }
+
+/** Una línea de texto de la foto y su caja, de 0 a 1 en proporción de la imagen. */
+class TextLine(val text: String, val left: Float, val top: Float, val right: Float, val bottom: Float)
+
+/** El texto de una foto por líneas. [aspect] es el ancho entre el alto de la imagen. */
+class TextPage(val lines: List<TextLine>, val aspect: Float)
 
 /** La ubicación aún no se ha intentado leer (faltaba el permiso). */
 private const val PLACE_UNTRIED = 999f
@@ -53,20 +67,35 @@ private const val PLACE_NONE = 998f
 /** No se pudo sacar el color de la foto: no se vuelve a intentar. */
 const val COLOR_NONE = 1
 
+/** Saltó el flash. */
+const val FLAG_FLASH = 1
+
+/** Hecha con la cámara delantera. */
+const val FLAG_FRONT = 2
+
+/** Foto en movimiento: lleva un vídeo corto dentro. */
+const val FLAG_MOTION = 4
+
 /**
  * Donde se guarda lo que se sabe de cada foto. Es una base de datos y no un archivo de texto para
  * poder anotar solo las fotos que cambian, en vez de reescribirlo todo cada pocos segundos.
  */
-private class IndexStore(private val context: Context) : SQLiteOpenHelper(context, "analisis.db", null, 1) {
+private class IndexStore(private val context: Context) : SQLiteOpenHelper(context, "analisis.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE TABLE foto (id INTEGER PRIMARY KEY, modified INTEGER, blur REAL, lat REAL, lon REAL, " +
-                "labels TEXT, texto TEXT, deep INTEGER, hash INTEGER, pending INTEGER, color INTEGER)",
+                "labels TEXT, texto TEXT, deep INTEGER, hash INTEGER, pending INTEGER, color INTEGER, camara TEXT, flags INTEGER DEFAULT 0)",
         )
         importOldFile(db)
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    /** Versión 2: cámara, flash, selfie y foto en movimiento. Lo ya analizado se completa en la siguiente pasada. */
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE foto ADD COLUMN camara TEXT")
+            db.execSQL("ALTER TABLE foto ADD COLUMN flags INTEGER DEFAULT 0")
+        }
+    }
 
     /** Lo analizado por versiones anteriores estaba en un archivo de texto: se pasa aquí una vez. */
     private fun importOldFile(db: SQLiteDatabase) {
@@ -91,7 +120,7 @@ private class IndexStore(private val context: Context) : SQLiteOpenHelper(contex
     }
 
     private fun write(db: SQLiteDatabase, id: Long, e: IndexEntry) {
-        val row = ContentValues(11)
+        val row = ContentValues(13)
         row.put("id", id)
         row.put("modified", e.modified)
         row.put("blur", e.blur)
@@ -103,17 +132,20 @@ private class IndexStore(private val context: Context) : SQLiteOpenHelper(contex
         row.put("hash", e.hash)
         row.put("pending", if (e.pending) 1 else 0)
         row.put("color", e.color)
+        row.put("camara", e.camera)
+        row.put("flags", e.flags)
         db.insertWithOnConflict("foto", null, row, SQLiteDatabase.CONFLICT_REPLACE)
     }
 
     fun readAll(into: MutableMap<Long, IndexEntry>) {
-        readableDatabase.rawQuery("SELECT id, modified, blur, lat, lon, labels, texto, deep, hash, pending, color FROM foto", null).use { c ->
+        readableDatabase.rawQuery("SELECT id, modified, blur, lat, lon, labels, texto, deep, hash, pending, color, camara, flags FROM foto", null).use { c ->
             while (c.moveToNext()) {
                 val labels = c.getString(5).orEmpty()
                 into[c.getLong(0)] = IndexEntry(
                     c.getLong(1), c.getFloat(2), c.getFloat(3), c.getFloat(4),
                     if (labels.isEmpty()) emptyList() else labels.split('|'), c.getString(6).orEmpty(),
                     c.getInt(7) == 1, c.getLong(8), c.getInt(9) == 1, c.getInt(10),
+                    if (c.isNull(11)) null else c.getString(11), c.getInt(12),
                 )
             }
         }
@@ -211,11 +243,15 @@ class Indexer(private val context: Context) {
             val retry = known?.pending == true && !labelsDown
             // Lo analizado por versiones anteriores no tiene color: se saca de la miniatura, sin más.
             val needColor = known != null && known.color == 0
-            if (known != null && !retry && !needColor && !(known.lat == PLACE_UNTRIED && canReadPlace)) continue
+            // Lo analizado antes de la versión 2 no sabe de qué cámara viene: se lee el EXIF, sin más.
+            val needCamera = known?.camera == null
+            if (known != null && !retry && !needColor && !needCamera && !(known.lat == PLACE_UNTRIED && canReadPlace)) continue
             Quiet.whenIdle()
+            val wantPlace = canReadPlace && !item.isVideo && (known == null || known.lat == PLACE_UNTRIED)
+            val exif = if (!item.isVideo && (needCamera || wantPlace)) readExif(item, wantPlace) else null
             val place = when {
                 known != null && known.lat != PLACE_UNTRIED -> known.lat to known.lon
-                canReadPlace && !item.isVideo -> readPlace(item) ?: (PLACE_NONE to PLACE_NONE)
+                canReadPlace && !item.isVideo -> exif?.place ?: (PLACE_NONE to PLACE_NONE)
                 canReadPlace || item.isVideo -> PLACE_NONE to PLACE_NONE
                 else -> PLACE_UNTRIED to PLACE_UNTRIED
             }
@@ -236,6 +272,8 @@ class Indexer(private val context: Context) {
                     hash = known?.hash ?: look?.hash ?: 0L,
                     pending = if (wantLabels) look?.labels == null else known?.pending ?: false,
                     color = look?.color ?: known?.color ?: COLOR_NONE,
+                    camera = if (needCamera) exif?.camera.orEmpty() else known?.camera,
+                    flags = if (needCamera) exif?.flags ?: 0 else known?.flags ?: 0,
                 ),
             )
             fresh++
@@ -259,7 +297,7 @@ class Indexer(private val context: Context) {
                 continue
             }
             failures = 0
-            put(item.id, IndexEntry(known.modified, blur, known.lat, known.lon, known.labels, text, true, known.hash, known.pending, known.color))
+            put(item.id, IndexEntry(known.modified, blur, known.lat, known.lon, known.labels, text, true, known.hash, known.pending, known.color, known.camera, known.flags))
             fresh++
             report()
         }
@@ -319,13 +357,58 @@ class Indexer(private val context: Context) {
         return text to blur
     }
 
-    /** Lugar guardado en la propia foto. Android solo lo entrega con el permiso de ubicación de fotos. */
-    private fun readPlace(item: MediaItem): Pair<Float, Float>? = try {
-        context.contentResolver.openInputStream(MediaStore.setRequireOriginal(item.uri))?.use { stream ->
-            ExifInterface(stream).latLong?.let { it[0].toFloat() to it[1].toFloat() }
+    /** Lo que se lee del EXIF. [place] es null si no se pidió o la foto no lo guarda. */
+    private class Exif(val place: Pair<Float, Float>?, val camera: String, val flags: Int)
+
+    /**
+     * Datos guardados en la propia foto: cámara, flash, si es un selfie, si lleva vídeo dentro y,
+     * con [withPlace], el lugar. Android solo entrega el lugar con el permiso de ubicación de fotos.
+     */
+    private fun readExif(item: MediaItem, withPlace: Boolean): Exif? = try {
+        val uri = if (withPlace) MediaStore.setRequireOriginal(item.uri) else item.uri
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            val exif = ExifInterface(stream)
+            var flags = 0
+            if (exif.getAttributeInt(ExifInterface.TAG_FLASH, 0) and 1 != 0) flags = flags or FLAG_FLASH
+            val lens = exif.getAttribute(ExifInterface.TAG_LENS_MODEL).orEmpty()
+            if (lens.contains("front", ignoreCase = true) || lens.contains("selfie", ignoreCase = true)) flags = flags or FLAG_FRONT
+            if (isMotionPhoto(context, item, exif)) flags = flags or FLAG_MOTION
+            Exif(
+                if (withPlace) exif.latLong?.let { it[0].toFloat() to it[1].toFloat() } else null,
+                cameraName(exif.getAttribute(ExifInterface.TAG_MAKE), exif.getAttribute(ExifInterface.TAG_MODEL)),
+                flags,
+            )
         }
     } catch (e: Exception) {
         null
+    }
+
+    /** Las líneas de texto de una foto y dónde está cada una, para marcarlas encima de la imagen. */
+    fun readTextPage(item: MediaItem): TextPage? {
+        val bitmap = try {
+            ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, item.uri)) { decoder, info, _ ->
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                val longSide = maxOf(info.size.width, info.size.height)
+                if (longSide > 2400) {
+                    val k = 2400f / longSide
+                    decoder.setTargetSize((info.size.width * k).toInt().coerceAtLeast(1), (info.size.height * k).toInt().coerceAtLeast(1))
+                }
+            }
+        } catch (e: Throwable) {
+            return null
+        }
+        val w = bitmap.width.toFloat()
+        val h = bitmap.height.toFloat()
+        val lines = runCatching {
+            Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0))).textBlocks.flatMap { block ->
+                block.lines.mapNotNull { line ->
+                    val box = line.boundingBox ?: return@mapNotNull null
+                    TextLine(line.text, box.left / w, box.top / h, box.right / w, box.bottom / h)
+                }
+            }
+        }.getOrNull()
+        bitmap.recycle()
+        return lines?.let { TextPage(it, w / h) }
     }
 
     /** Lee ahora mismo todo el texto de una foto, a buena resolución y respetando los saltos de línea. */
@@ -421,4 +504,37 @@ fun findDuplicates(items: List<MediaItem>, index: Map<Long, IndexEntry>): List<L
     return groups.values.filter { it.size >= 2 }.map { group ->
         group.sortedWith(compareByDescending<MediaItem> { it.width.toLong() * it.height }.thenBy { it.date })
     }
+}
+
+/**
+ * Comprueba de verdad que [a] y [b] son la misma imagen: misma forma y, reducidas a 32 x 32 en
+ * grises, casi los mismos píxeles. Tolera que una sea una copia recomprimida (como las que manda
+ * WhatsApp) pero no dos fotos distintas que comparten huella.
+ */
+fun sameImage(context: Context, a: MediaItem, b: MediaItem): Boolean = runCatching {
+    if (a.isVideo || b.isVideo) return@runCatching a.size == b.size && a.duration == b.duration
+    if (a.width > 0 && b.width > 0 && a.height > 0 && b.height > 0) {
+        val ratioA = a.width.toFloat() / a.height
+        val ratioB = b.width.toFloat() / b.height
+        if (kotlin.math.abs(ratioA - ratioB) > 0.02f * ratioA) return@runCatching false
+    }
+    val pa = tinyGray(context, a)
+    val pb = tinyGray(context, b)
+    var diff = 0L
+    for (i in pa.indices) diff += kotlin.math.abs(pa[i] - pb[i])
+    diff.toFloat() / pa.size <= SAME_IMAGE_LIMIT
+}.getOrDefault(false)
+
+/** Diferencia media por píxel (de 0 a 255) por debajo de la cual dos imágenes son la misma. */
+private const val SAME_IMAGE_LIMIT = 6f
+
+private fun tinyGray(context: Context, item: MediaItem): IntArray {
+    val thumb = context.contentResolver.loadThumbnail(item.uri, Size(128, 128), null)
+    val small = Bitmap.createScaledBitmap(thumb, 32, 32, true)
+    if (small !== thumb) thumb.recycle()
+    val px = IntArray(32 * 32)
+    small.getPixels(px, 0, 32, 0, 0, 32, 32)
+    small.recycle()
+    for (i in px.indices) px[i] = gray(px[i])
+    return px
 }

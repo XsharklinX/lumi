@@ -4,9 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
@@ -22,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -32,6 +31,8 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
@@ -78,7 +79,6 @@ import com.lumi.galeria.data.MediaItem
 import com.lumi.galeria.data.Memory
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: LazyGridState, link: GridLink) {
     val level = state.level
@@ -93,6 +93,8 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
     var anchor by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     var calendar by remember { mutableStateOf(false) }
+    // Vídeo con el dedo encima, que se reproduce en su miniatura.
+    var holding by remember { mutableStateOf<Long?>(null) }
     val stories = remember(state.memory, state.autoAlbums, state.items, state.favorites) { storiesOf(state) }
     val container = remember { arrayOfNulls<LayoutCoordinates>(1) }
 
@@ -174,7 +176,7 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
     }
     val firstHeader = if (cells.firstOrNull() is Cell.Recall) 1 else 0
     val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    val barHeight = (if (state.partial && pick == null) 184.dp else 112.dp) + (if (pick == null) 46.dp else 0.dp)
+    val barHeight = (if (state.partial && pick == null) 146.dp else 74.dp) + (if (pick == null) 46.dp else 0.dp)
 
     // La cabecera se retira al bajar por las fotos y vuelve en cuanto se sube un poco. Arriba
     // del todo, y mientras otra app espera a que se elija una foto, está siempre.
@@ -210,7 +212,7 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                 EmptyMessage("Nada con este filtro", "Toca «Todo» para volver a ver la biblioteca completa.")
             }
             else -> LazyVerticalGrid(
-                columns = GridCells.Fixed(columns),
+                columns = GridCells.Fixed(scaledColumns(columns)),
                 state = grid,
                 contentPadding = PaddingValues(start = 2.dp, end = 2.dp, top = top + barHeight, bottom = 130.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -248,17 +250,19 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                             if (next.size != currentSelection.size) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             selection = next
                         },
+                        onHold = { holding = it },
+                        isVideo = { id -> currentCells.any { it is Cell.Photo && it.item.id == id && it.item.isVideo } },
                     ),
             ) {
                 itemsIndexed(
                     cells,
                     key = { _, cell -> cell.key },
-                    span = { _, cell -> GridItemSpan(if (cell is Cell.Photo) 1 else maxLineSpan) },
+                    span = { _, cell -> GridItemSpan(if (cell is Cell.Photo && !cell.star) 1 else maxLineSpan) },
                     contentType = { _, cell -> cell::class },
                 ) { index, cell ->
                     when (cell) {
                         is Cell.Recall -> if (pick == null && stories.isNotEmpty()) {
-                            StoryRow(stories) { vm.open(it.open) }
+                            StoryRow(stories) { vm.open(Screen.StoryView(it.title, it.ids, it.open)) }
                         }
                         // El primer grupo ya se lee en el título grande de arriba.
                         is Cell.Header -> if (index > firstHeader) {
@@ -275,14 +279,17 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                             val item = cell.item
                             PhotoTile(
                                 item = item,
-                                px = thumb,
+                                px = if (cell.star) 1024 else thumb,
                                 stackSize = cell.stackSize,
                                 favorite = item.id in state.favorites,
                                 selected = if (selection.isEmpty()) null else item.id in selection,
                                 badges = level != Level.YEAR,
                                 corner = if (level == Level.DAY && columns <= 3) 10.dp else 4.dp,
                                 tone = state.index[item.id]?.color ?: 0,
-                                modifier = Modifier.aspectRatio(1f).clickable {
+                                motion = state.index[item.id]?.motion == true,
+                                watched = state.watched[item.id]?.let { it.toFloat() / item.duration.coerceAtLeast(1) } ?: 0f,
+                                preview = holding == item.id,
+                                modifier = Modifier.aspectRatio(if (cell.star) 1.6f else 1f).clickable {
                                     when {
                                         selection.isNotEmpty() -> {
                                             haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
@@ -357,28 +364,17 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                         else -> "Elige una foto"
                     },
                     style = TitleStyle, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    // El título grande es el del grupo que se está viendo. Tocarlo abre el calendario
-                    // para saltar a otra fecha; mantenerlo pulsado marca el grupo entero.
-                    modifier = Modifier.weight(1f).combinedClickable(
-                        enabled = pick == null || pick.multiple,
-                        onLongClick = { header?.let { toggleGroup(cells.indexOf(it)) } },
-                    ) {
-                        if (pick == null) calendar = true else header?.let { toggleGroup(cells.indexOf(it)) }
+                    // El título grande es el del grupo que se está viendo: tocarlo lo marca entero.
+                    modifier = Modifier.weight(1f).clickable(enabled = pick == null || pick.multiple) {
+                        header?.let { toggleGroup(cells.indexOf(it)) }
                     },
                 )
                 if (pick == null) {
+                    BarIcon(Icons.Filled.DateRange, "Calendario", { calendar = true })
                     BarIcon(CameraIcon, "Hacer una foto", actions.camera)
                     BarIcon(Icons.Filled.Search, "Buscar", { vm.openSearch() })
                     BarIcon(Icons.Filled.Settings, "Ajustes", { vm.open(Screen.Settings) })
                 }
-            }
-            Row(Modifier.padding(end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    if (pick == null) countText(header?.count ?: 0, "foto", "fotos") else header?.title.orEmpty(),
-                    style = SmallStyle.copy(fontSize = 13.sp),
-                    modifier = Modifier.weight(1f),
-                )
-                LevelSwitch(level, ::changeLevel)
             }
             if (pick == null) {
                 Row(Modifier.padding(top = 6.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -394,6 +390,18 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                                 .clickable { vm.setFilter(option) }
                                 .padding(horizontal = 14.dp, vertical = 7.dp),
                         )
+                    }
+                    // La papelera, a mano cuando tiene algo dentro.
+                    if (state.trashed.isNotEmpty()) {
+                        Row(
+                            Modifier.clip(CircleShape).background(Lumi.Surface).clickable { vm.open(Screen.Trash) }
+                                .padding(start = 10.dp, end = 14.dp, top = 6.dp, bottom = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Icon(Icons.Filled.Delete, "Papelera", Modifier.size(16.dp), tint = Lumi.Muted)
+                            Text("${state.trashed.size}", style = LabelStyle)
+                        }
                     }
                 }
             }
@@ -431,7 +439,7 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                     style = LabelStyle,
                     modifier = Modifier.clip(CircleShape).background(Lumi.Surface).padding(horizontal = 18.dp, vertical = 12.dp),
                 )
-                selection.isEmpty() -> Dock(Screen.Timeline, vm::switchTab)
+                selection.isEmpty() -> if (!LocalWide.current) Dock(Screen.Timeline, vm::switchTab)
                 else -> SelectionBar(state.tiles.filter { it.id in selection }, state, vm, actions) { selection = emptySet() }
             }
         }
@@ -443,12 +451,13 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
         // Se abre por el mes de la primera foto que hay en pantalla.
         val seen = (grid.firstVisibleItemIndex until cells.size).firstNotNullOfOrNull { (cells[it] as? Cell.Photo)?.item }
         CalendarSheet(
-            tiles = state.tiles,
+            tiles = state.items,
             start = seen?.let(::dayOf) ?: java.time.LocalDate.now(),
+            // Un día abre todo lo que se hizo o se guardó ese día, sin mover la cuadrícula.
             onPick = { day ->
                 calendar = false
-                val index = cells.indexOfFirst { it is Cell.Photo && dayOf(it.item) == day }
-                if (index >= 0) scope.launch { grid.scrollToItem(if (index > 0 && cells[index - 1] is Cell.Header) index - 1 else index) }
+                val ids = state.items.filter { dayOf(it) == day }.mapTo(HashSet()) { it.id }
+                if (ids.isNotEmpty()) vm.open(Screen.Items(com.lumi.galeria.dayTitle(day), Source.Ids(ids)))
             },
             onDismiss = { calendar = false },
         )
@@ -475,21 +484,3 @@ private fun RecallCard(memory: Memory, onClick: () -> Unit) {
     }
 }
 
-@Composable
-private fun LevelSwitch(level: Level, onChange: (Level) -> Unit) {
-    Row(Modifier.clip(CircleShape).background(Lumi.Surface).padding(3.dp)) {
-        Level.entries.forEach { option ->
-            val on = option == level
-            Text(
-                option.label,
-                style = LabelStyle,
-                color = if (on) Lumi.OnAccent else Lumi.Muted,
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .background(if (on) Lumi.Accent else Color.Transparent)
-                    .clickable { onChange(option) }
-                    .padding(horizontal = 13.dp, vertical = 6.dp),
-            )
-        }
-    }
-}

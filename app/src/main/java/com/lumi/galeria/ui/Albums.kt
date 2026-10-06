@@ -1,5 +1,9 @@
 package com.lumi.galeria.ui
 
+import androidx.compose.ui.graphics.Color
+import com.lumi.galeria.monthTitle
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.runtime.derivedStateOf
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
@@ -27,6 +31,8 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
@@ -37,6 +43,8 @@ import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -93,6 +101,13 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
     val rest = shown.filter { !it.pinned }
     // Fecha de lo último que entró en cada carpeta.
     val latest = remember(state.items) { HashMap<Long, Long>().apply { state.items.forEach { merge(it.bucketId, it.date, ::maxOf) } } }
+    // Las cuatro fotos más recientes de cada carpeta, para la vista "Con fotos".
+    val recent = remember(state.items, state.albumView) {
+        if (state.albumView != AlbumView.STRIP) emptyMap()
+        else HashMap<Long, ArrayList<MediaItem>>().apply {
+            state.items.forEach { item -> getOrPut(item.bucketId) { ArrayList() }.let { if (it.size < 4) it += item } }
+        }
+    }
 
     fun openAlbum(album: Album) {
         if (!album.locked) vm.open(Screen.Album(album.bucketId))
@@ -101,6 +116,8 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
             vm.open(Screen.Album(album.bucketId))
         }
     }
+
+    val scanDocument = rememberDocumentScanner(vm)
 
     // Opciones de un álbum al mantenerlo pulsado.
     val menu: @Composable (Album) -> Unit = { album ->
@@ -158,93 +175,89 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                 BarIcon(Icons.Filled.Search, "Buscar", { vm.openSearch() })
                 BarIcon(Icons.Filled.Settings, "Ajustes", { vm.open(Screen.Settings) })
             }
-            Row(Modifier.padding(start = 12.dp, end = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "Nuevo álbum",
-                    style = LabelStyle,
-                    color = Lumi.OnAccent,
-                    modifier = Modifier.clip(CircleShape).background(Lumi.Accent).clickable { newName = ""; creating = true }.padding(horizontal = 16.dp, vertical = 9.dp),
-                )
-                Spacer(Modifier.weight(1f))
-                SortMenu(AlbumSort.entries, state.albumSort, { it.label }, vm::setAlbumSort)
+            // Favoritas y Privada, pequeños: son accesos, no álbumes que haya que ver en grande.
+            Row(Modifier.padding(start = 12.dp, end = 12.dp, bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                QuickAccess("Favoritas", countText(favorites.size, "foto", "fotos"), Icons.Filled.Favorite, favorites.firstOrNull(), Modifier.weight(1f)) {
+                    vm.open(Screen.Favorites)
+                }
+                QuickAccess("Escáner", "Documentos", Icons.Filled.Edit, null, Modifier.weight(1f)) { scanDocument() }
+                QuickAccess("Privada", "Con tu huella", Icons.Filled.Lock, null, Modifier.weight(1f)) { vm.openVault(actions.unlock) }
             }
+            Row(Modifier.padding(start = 12.dp, end = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                NewButton { newName = ""; creating = true }
+                ImportButton { vm.open(Screen.Import) }
+                ViewSwitch(state.albumView, vm::setAlbumView)
+                Spacer(Modifier.weight(1f))
+                // «A mano» abre la pantalla para colocarlos; se puede volver a ella cuando se quiera.
+                SortMenu(AlbumSort.entries, state.albumSort, { it.label }) { sort ->
+                    if (sort == AlbumSort.MANUAL) vm.open(Screen.AlbumOrder) else vm.setAlbumSort(sort)
+                }
+            }
+            val view = state.albumView
+            val columns = if (view == AlbumView.GRID) 2 else 1
             LazyVerticalGrid(
-                columns = GridCells.Fixed(2),
+                columns = GridCells.Fixed(scaledColumns(columns)),
                 contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 130.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                // Dos accesos fijos: favoritas y carpeta privada.
-                item(key = "accesos", span = { GridItemSpan(maxLineSpan) }) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        AlbumCard("Favoritas", countText(favorites.size, "foto", "fotos"), favorites.firstOrNull(), Icons.Filled.Favorite, Modifier.weight(1f)) {
-                            vm.open(Screen.Favorites)
-                        }
-                        AlbumCard("Privada", "Con tu huella", null, Icons.Filled.Lock, Modifier.weight(1f)) {
-                            if (state.vaultOpen) vm.open(Screen.Vault)
-                            else actions.unlock {
-                                vm.unlockVault()
-                                vm.open(Screen.Vault)
+                // Lo que arma Lumi va en una fila que se desliza de lado, para no alargar la pantalla.
+                if (state.facesOn && state.people.isNotEmpty()) {
+                    item(key = "personas", span = { GridItemSpan(maxLineSpan) }) { PeopleRow(state, vm) }
+                }
+                val reviewYear = defaultReviewYear(state.items)
+                if (trips.isNotEmpty() || things.isNotEmpty() || reviewYear != null || state.items.any { it.isScreenshot }) {
+                    item(key = "lumi", span = { GridItemSpan(maxLineSpan) }) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SectionTitle("Hechos por Lumi")
+                            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                state.items.firstOrNull { it.isScreenshot }?.let { shot ->
+                                    LumiAlbumCard("Capturas ordenadas", "Chats, compras, mapas…", shot) { vm.open(Screen.Screenshots) }
+                                }
+                                if (reviewYear != null) {
+                                    val cover = state.items.firstOrNull { it.id in state.favorites && java.time.Instant.ofEpochMilli(it.date).atZone(java.time.ZoneId.systemDefault()).year == reviewYear }
+                                        ?: state.items.firstOrNull { !it.isScreenshot && java.time.Instant.ofEpochMilli(it.date).atZone(java.time.ZoneId.systemDefault()).year == reviewYear }
+                                    if (cover != null) {
+                                        LumiAlbumCard(if (com.lumi.galeria.Lang.english) "Your $reviewYear" else "Tu $reviewYear", "Tu año en fotos", cover) {
+                                            vm.open(Screen.YearReview(reviewYear))
+                                        }
+                                    }
+                                }
+                                (trips + things).forEach { album ->
+                                    LumiAlbumCard(
+                                        album.title,
+                                        formatCount(album.items.size) + if (album.subtitle.isNotEmpty()) " · ${album.subtitle}" else "",
+                                        album.items.first(),
+                                    ) { vm.open(Screen.Items(album.title, Source.Auto(album.key))) }
+                                }
                             }
                         }
                     }
                 }
-
-                // Los fijados van arriba y en grande, junto a los dos accesos.
-                items(pinned, key = { it.bucketId }) { album ->
+                item(key = "t-carpetas", span = { GridItemSpan(maxLineSpan) }) {
+                    Column {
+                        SectionTitle("Tus carpetas")
+                        Text("Mantén pulsada una para fijarla arriba, bloquearla u ocultarla.", style = SmallStyle, modifier = Modifier.padding(start = 6.dp, top = 2.dp))
+                    }
+                }
+                items(pinned + rest, key = { it.bucketId }) { album ->
+                    // Un álbum con candado no dice ni cuántas fotos guarda.
+                    val subtitle = if (album.locked) "Con candado" else
+                        formatCount(album.count) + (latest[album.bucketId]?.let { " · " + agoText(it) } ?: "") +
+                            (if (album.pinned) " · fijado" else "") + (if (album.hidden) " · oculto" else "") +
+                            if (album.onCard in 1 until album.count) " · parte en la tarjeta" else ""
                     Box {
-                        if (album.locked) {
-                            LockedAlbumCard(album.name, onClick = { openAlbum(album) }, onLongClick = { pressed = album.bucketId })
-                        } else {
-                            AlbumCard(
-                                album.name,
-                                countText(album.count, "elemento", "elementos") + if (album.hidden) " · oculto" else "",
-                                album.cover, null,
-                                onLongClick = { pressed = album.bucketId },
-                            ) { openAlbum(album) }
+                        when (view) {
+                            AlbumView.GRID -> AlbumTile(album.name, subtitle, album.cover, album.locked, { pressed = album.bucketId }, card = album.onCard > 0) { openAlbum(album) }
+                            AlbumView.LIST -> AlbumRow(album.name, subtitle, if (album.locked) null else album.cover, { pressed = album.bucketId }, card = album.onCard > 0) { openAlbum(album) }
+                            AlbumView.STRIP -> AlbumStrip(album.name, subtitle, recent[album.bucketId].orEmpty(), album.locked, { pressed = album.bucketId }, card = album.onCard > 0) { openAlbum(album) }
                         }
                         menu(album)
                     }
                 }
-
-                // El resto, en una lista compacta: se lee de arriba abajo sin recorrer portadas.
-                if (rest.isNotEmpty()) {
-                    item(key = "t-carpetas", span = { GridItemSpan(maxLineSpan) }) {
-                        Column {
-                            SectionTitle("Tus carpetas")
-                            Text("Mantén pulsada una para fijarla arriba, bloquearla u ocultarla.", style = SmallStyle, modifier = Modifier.padding(start = 6.dp, top = 2.dp))
-                        }
-                    }
-                    items(rest, key = { it.bucketId }, span = { GridItemSpan(maxLineSpan) }) { album ->
-                        Box {
-                            AlbumRow(
-                                name = album.name,
-                                // Un álbum con candado no dice ni cuántas fotos guarda.
-                                subtitle = if (album.locked) "Con candado" else
-                                    formatCount(album.count) +
-                                        (latest[album.bucketId]?.let { " · " + agoText(it) } ?: "") + if (album.hidden) " · oculto" else "",
-                                cover = if (album.locked) null else album.cover,
-                                onLongClick = { pressed = album.bucketId },
-                            ) { openAlbum(album) }
-                            menu(album)
-                        }
-                    }
-                }
-
-                if (trips.isNotEmpty() || things.isNotEmpty()) {
-                    item(key = "t-lumi", span = { GridItemSpan(maxLineSpan) }) { SectionTitle("Hechos por Lumi") }
-                    items(trips + things, key = { it.key }, span = { GridItemSpan(maxLineSpan) }) { album ->
-                        AlbumRow(
-                            name = album.title,
-                            subtitle = formatCount(album.items.size) + if (album.subtitle.isNotEmpty()) " · ${album.subtitle}" else "",
-                            cover = album.items.first(),
-                            onLongClick = null,
-                        ) { vm.open(Screen.Items(album.title, Source.Auto(album.key))) }
-                    }
-                }
             }
         }
-        Dock(Screen.Albums, vm::switchTab, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 14.dp))
+        if (!LocalWide.current) Dock(Screen.Albums, vm::switchTab, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 14.dp))
     }
 
     renaming?.let { album ->
@@ -301,10 +314,32 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
     }
 }
 
+/** Barra para pegar aquí lo que se copió o cortó en otro sitio. */
+@Composable
+private fun PasteBar(clip: com.lumi.galeria.Clip, album: Album?, vm: LumiViewModel, actions: Actions) {
+    // Lo que ya está en este álbum no se pega otra vez.
+    val items = clip.items.filter { it.bucketId != album?.bucketId }
+    Row(
+        Modifier.padding(horizontal = 12.dp).clip(CircleShape).background(Lumi.Surface).padding(5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        when {
+            album == null || items.isEmpty() -> Text("Ya están en este álbum", style = LabelStyle, modifier = Modifier.padding(horizontal = 14.dp))
+            !isWritableAlbumPath(album.path) -> Text("Android no deja pegar en esta carpeta", style = LabelStyle, modifier = Modifier.padding(horizontal = 14.dp))
+            else -> PillButton(if (clip.move) "Mover ${items.size} aquí" else "Pegar ${items.size} aquí", {
+                if (clip.move) actions.write(items) { vm.moveTo(items, album.path, album.name) } else vm.copyTo(items, album.path, album.name)
+                vm.clip = null
+            })
+        }
+        BarIcon(Icons.Filled.Close, "Cancelar", { vm.clip = null })
+    }
+}
+
 /** Un álbum en la lista compacta: miniatura, nombre y una línea con lo que hay dentro. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AlbumRow(name: String, subtitle: String, cover: MediaItem?, onLongClick: (() -> Unit)?, onClick: () -> Unit) {
+private fun AlbumRow(name: String, subtitle: String, cover: MediaItem?, onLongClick: (() -> Unit)?, card: Boolean = false, onClick: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).combinedClickable(onClick = onClick, onLongClick = onLongClick).padding(horizontal = 4.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -315,7 +350,10 @@ private fun AlbumRow(name: String, subtitle: String, cover: MediaItem?, onLongCl
             else Icon(Icons.Filled.Lock, "Bloqueado", Modifier.size(24.dp), tint = Lumi.Accent)
         }
         Column(Modifier.weight(1f)) {
-            Text(name, style = HeadingStyle.copy(fontSize = 15.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text(name, style = HeadingStyle.copy(fontSize = 15.sp), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                if (card) Icon(SdCardIcon, "En la tarjeta de memoria", Modifier.size(14.dp), tint = Lumi.Muted)
+            }
             Text(subtitle, style = SmallStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
@@ -477,6 +515,8 @@ fun AlbumScreen(screen: Screen.Album, state: UiState, vm: LumiViewModel, actions
                 }
             }
         },
+        bottom = vm.clip?.let { clip -> { PasteBar(clip, album, vm, actions) } },
+        hero = { AlbumHero(album?.cover ?: items.firstOrNull(), album?.name ?: "Álbum", items, source, vm, actions) },
     )
 }
 
@@ -500,12 +540,59 @@ fun AnyItemsScreen(screen: Screen.Items, state: UiState, vm: LumiViewModel, acti
         emptyTitle = "Aquí ya no hay fotos",
         emptyText = "Se han movido o borrado.",
         items = items, source = screen.source, state = state, vm = vm, actions = actions, link = link,
+        hero = { AlbumHero(items.firstOrNull(), screen.title, items, screen.source, vm, actions) },
     )
+}
+
+/**
+ * La portada de un álbum: su foto en grande con el nombre, cuántas fotos tiene y de qué fechas, y
+ * botones para verlo en presentación o compartirlo.
+ */
+@Composable
+private fun AlbumHero(cover: MediaItem?, title: String, items: List<MediaItem>, source: Source, vm: LumiViewModel, actions: Actions) {
+    val dates = remember(items) {
+        if (items.isEmpty()) "" else {
+            val zone = java.time.ZoneId.systemDefault()
+            val first = java.time.YearMonth.from(java.time.Instant.ofEpochMilli(items.minOf { it.date }).atZone(zone))
+            val last = java.time.YearMonth.from(java.time.Instant.ofEpochMilli(items.maxOf { it.date }).atZone(zone))
+            if (first == last) monthTitle(first) else "${monthTitle(first)} – ${monthTitle(last)}"
+        }
+    }
+    Column {
+        Box(Modifier.fillMaxWidth().aspectRatio(1.4f)) {
+            if (cover != null) MediaThumb(cover, 1024, Modifier.fillMaxSize())
+            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.4f to Color.Transparent, 1f to Lumi.Bg)))
+            Column(Modifier.align(Alignment.BottomStart).padding(start = 16.dp, end = 16.dp, bottom = 4.dp)) {
+                Text(title, style = TitleStyle.copy(fontSize = 30.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(countText(items.size, "foto", "fotos") + if (dates.isNotEmpty()) " · $dates" else "", style = SmallStyle.copy(fontSize = 14.sp))
+            }
+        }
+        Row(Modifier.padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            HeroButton(SlidesIcon, "Presentación") {
+                items.firstOrNull()?.let { vm.open(Screen.Viewer(source, it.id, null, slideshow = true)) }
+            }
+            // Las apps que reciben fotos no suelen aceptar cientos de golpe.
+            HeroButton(Icons.Filled.Share, "Compartir") { actions.share(items.take(100)) }
+            if (items.count { !it.isVideo } >= 2) HeroButton(MovieIcon, "Vídeo") { vm.open(Screen.MemoryVideo(title, items.map { it.id })) }
+        }
+    }
+}
+
+@Composable
+private fun HeroButton(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Row(
+        Modifier.clip(CircleShape).background(Lumi.Surface).clickable(onClick = onClick).padding(start = 12.dp, end = 16.dp, top = 9.dp, bottom = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(icon, null, Modifier.size(17.dp), tint = Lumi.Accent)
+        Text(label, style = LabelStyle)
+    }
 }
 
 /** Cuadrícula sencilla de una lista de fotos, con selección y paso al visor. */
 @Composable
-private fun ItemsScreen(
+internal fun ItemsScreen(
     title: String,
     emptyTitle: String,
     emptyText: String,
@@ -516,12 +603,21 @@ private fun ItemsScreen(
     actions: Actions,
     link: GridLink,
     extra: (@Composable () -> Unit)? = null,
+    /** Barra de abajo cuando no hay nada elegido. */
+    bottom: (@Composable () -> Unit)? = null,
+    /** Portada grande arriba de las fotos; al bajar, se va con ellas. */
+    hero: (@Composable () -> Unit)? = null,
+    /** Algo más que hacer con lo elegido, encima de la barra de selección. */
+    selectionExtra: (@Composable (chosen: List<MediaItem>, clear: () -> Unit) -> Unit)? = null,
 ) {
+    // Con portada, la cuadrícula empieza una casilla más abajo.
+    val offset = if (hero != null) 1 else 0
     val grid = rememberLazyGridState()
     val haptic = LocalHapticFeedback.current
     var selection by remember { mutableStateOf(emptySet<Long>()) }
     val currentItems by rememberUpdatedState(items)
     val currentSelection by rememberUpdatedState(selection)
+    var holding by remember { mutableStateOf<Long?>(null) }
 
     val container = remember { arrayOfNulls<LayoutCoordinates>(1) }
 
@@ -530,13 +626,15 @@ private fun ItemsScreen(
         link.boundsOf = { id -> tileBounds(grid, container[0], id) }
         link.reveal = { id ->
             val index = items.indexOfFirst { it.id == id }
-            if (index >= 0 && grid.layoutInfo.visibleItemsInfo.none { it.index == index }) grid.scrollToItem(maxOf(index - 6, 0))
+            if (index >= 0 && grid.layoutInfo.visibleItemsInfo.none { it.index == index + offset }) grid.scrollToItem(maxOf(index + offset - 6, 0))
         }
     }
+    // Mientras se ve la portada, el título ya está en ella.
+    val heroShown by remember { derivedStateOf { offset == 1 && grid.firstVisibleItemIndex == 0 } }
 
     Box(Modifier.fillMaxSize().background(Lumi.Bg)) {
         Column {
-            ScreenHeader(title, countText(items.size, "elemento", "elementos"), onBack = { vm.back() }) {
+            ScreenHeader(if (heroShown) "" else title, if (heroShown) "" else countText(items.size, "elemento", "elementos"), onBack = { vm.back() }) {
                 SortMenu(ItemSort.entries, state.itemSort, { it.label }, vm::setItemSort)
                 extra?.invoke()
             }
@@ -545,27 +643,33 @@ private fun ItemsScreen(
             } else {
                 Box {
                     LazyVerticalGrid(
-                        columns = GridCells.Fixed(3),
+                        columns = GridCells.Fixed(scaledColumns(state.itemColumns)),
                         state = grid,
                         contentPadding = PaddingValues(start = 2.dp, end = 2.dp, bottom = 130.dp),
                         horizontalArrangement = Arrangement.spacedBy(2.dp),
                         verticalArrangement = Arrangement.spacedBy(2.dp),
-                        modifier = Modifier.fillMaxSize().onGloballyPositioned { container[0] = it }.dragSelect(
+                        modifier = Modifier.fillMaxSize().onGloballyPositioned { container[0] = it }.pinchColumns(vm::zoomItems).dragSelect(
                             grid = grid,
-                            idAt = { currentItems.getOrNull(it)?.id },
+                            idAt = { currentItems.getOrNull(it - offset)?.id },
                             selection = { currentSelection },
                             onChange = { next ->
                                 if (next.size != currentSelection.size) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 selection = next
                             },
+                            onHold = { holding = it },
+                            isVideo = { id -> currentItems.any { it.id == id && it.isVideo } },
                         ),
                     ) {
+                        if (hero != null) item(key = "portada", span = { GridItemSpan(maxLineSpan) }) { hero() }
                         items(items, key = { it.id }) { item ->
                             PhotoTile(
                                 item = item,
                                 px = 320,
                                 favorite = source != Source.Favorites && item.id in state.favorites,
                                 tone = state.index[item.id]?.color ?: 0,
+                                motion = state.index[item.id]?.motion == true,
+                                watched = state.watched[item.id]?.let { it.toFloat() / item.duration.coerceAtLeast(1) } ?: 0f,
+                                preview = holding == item.id,
                                 selected = if (selection.isEmpty()) null else item.id in selection,
                                 modifier = Modifier.aspectRatio(1f).clickable {
                                     if (selection.isNotEmpty()) {
@@ -580,15 +684,24 @@ private fun ItemsScreen(
                     }
                     FastScroller(
                         grid, items.size,
-                        label = { index -> currentItems.getOrNull(index)?.let { dayTitle(it.date) }.orEmpty() },
+                        label = { index -> currentItems.getOrNull(index - offset)?.let { dayTitle(it.date) }.orEmpty() },
                         modifier = Modifier.fillMaxSize().padding(bottom = 110.dp).navigationBarsPadding(),
                     )
                 }
             }
         }
+        if (selection.isEmpty() && bottom != null) {
+            Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 14.dp)) { bottom() }
+        }
         if (selection.isNotEmpty()) {
-            Box(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 14.dp)) {
-                SelectionBar(items.filter { it.id in selection }, state, vm, actions) { selection = emptySet() }
+            Column(
+                Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val chosen = items.filter { it.id in selection }
+                selectionExtra?.invoke(chosen) { selection = emptySet() }
+                SelectionBar(chosen, state, vm, actions) { selection = emptySet() }
             }
         }
     }

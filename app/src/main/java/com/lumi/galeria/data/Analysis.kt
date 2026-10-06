@@ -97,8 +97,8 @@ class Analyzer(private val context: Context) {
     }
 
     private companion object {
-        const val NEAR_MS = 60_000L
-        const val MAX_DISTANCE = 14
+        const val NEAR_MS = 30_000L
+        const val MAX_DISTANCE = 10
     }
 }
 

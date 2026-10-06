@@ -18,11 +18,13 @@ Ninguno. La app no tiene permiso de acceso a internet, no pide una cuenta, no mu
 
 Para que puedas buscar en tus fotos, detectar fotos repetidas o leer el texto de una imagen, la app analiza tus fotos. Ese análisis se hace por completo en tu teléfono y su resultado se guarda solo en él. Se borra al desinstalar la app.
 
-Los componentes que leen el texto, reconocen lo que hay en una foto y quitan el fondo son de los servicios de Google Play. Google Play los descarga en tu teléfono al instalar la app o la primera vez que hacen falta. El análisis se hace igualmente en el dispositivo y tus fotos no se envían a ningún servidor.
+Los componentes que leen el texto, reconocen lo que hay en una foto, quitan el fondo y escanean documentos son de los servicios de Google Play. Google Play los descarga en tu teléfono al instalar la app o la primera vez que hacen falta. El análisis se hace igualmente en el dispositivo y tus fotos no se envían a ningún servidor.
+
+Para agrupar las fotos por personas, la app busca las caras de tus fotos y calcula una huella numérica de cada una para juntar las que se parecen. Se hace en tu teléfono, se guarda solo en él y no se usa para nada más. Los nombres que pones a las personas también se quedan en el teléfono. Puedes apagarlo en Ajustes, en «Agrupar caras», y en ese momento se borra todo lo que se sabía de las caras. El detector de caras es de los servicios de Google Play y el modelo que calcula las huellas va dentro de la app.
 
 ## Carpeta privada y bloqueo
 
-Los archivos que mueves a la carpeta privada se guardan cifrados dentro del espacio de la app. Si desinstalas la app o borras sus datos, esos archivos se pierden y no podemos recuperarlos, porque nunca han estado en nuestras manos. Si usas un PIN propio de Lumi, solo se guarda una huella irreversible del PIN.
+Los archivos que mueves a la carpeta privada se guardan cifrados dentro del espacio de la app. Si desinstalas la app o borras sus datos, esos archivos se pierden y no podemos recuperarlos, porque nunca han estado en nuestras manos. Si usas un PIN propio de Lumi, solo se guarda una huella irreversible del PIN. Si pones un PIN señuelo, se guarda igual, y abre una segunda carpeta privada, también cifrada.
 
 ## Copias de seguridad
 
@@ -66,11 +68,13 @@ None. The app has no internet permission, does not ask for an account, shows no 
 
 So that you can search your photos, find repeated photos or read the text in a picture, the app analyses your photos. That analysis happens entirely on your phone and its results are stored only there. They are deleted when you uninstall the app.
 
-The components that read text, recognise what is in a photo and remove the background belong to Google Play services. Google Play downloads them to your phone when the app is installed or the first time they are needed. The analysis still happens on the device and your photos are not sent to any server.
+The components that read text, recognise what is in a photo, remove the background and scan documents belong to Google Play services. Google Play downloads them to your phone when the app is installed or the first time they are needed. The analysis still happens on the device and your photos are not sent to any server.
+
+To group photos by person, the app finds the faces in your photos and computes a numeric fingerprint of each one to put similar faces together. This happens on your phone, is stored only there and is not used for anything else. The names you give people also stay on the phone. You can turn it off in Settings, under “Group faces”, and everything known about faces is deleted at that moment. The face detector belongs to Google Play services and the model that computes the fingerprints is inside the app.
 
 ## Private folder and lock
 
-Files you move to the private folder are stored encrypted inside the app's own space. If you uninstall the app or clear its data, those files are lost and we cannot recover them, because they were never in our hands. If you use a Lumi PIN, only an irreversible hash of the PIN is stored.
+Files you move to the private folder are stored encrypted inside the app's own space. If you uninstall the app or clear its data, those files are lost and we cannot recover them, because they were never in our hands. If you use a Lumi PIN, only an irreversible hash of the PIN is stored. If you set a decoy PIN, it is stored the same way and opens a second private folder, also encrypted.
 
 ## Backups
 

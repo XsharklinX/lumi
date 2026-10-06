@@ -6,6 +6,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import com.lumi.galeria.data.albumName
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -76,13 +78,23 @@ fun VaultScreen(state: UiState, vm: LumiViewModel) {
             )
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
+                columns = GridCells.Fixed(scaledColumns(3)),
                 contentPadding = PaddingValues(2.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
                 modifier = Modifier.weight(1f),
             ) {
-                items(items, key = { it.id }) { item ->
+                // Por álbumes, con el que tiene lo más reciente primero.
+                val groups = items.groupBy { albumName(it.path.trimEnd('/').substringAfterLast('/')) }
+                    .entries.sortedByDescending { (_, list) -> list.maxOf { it.date } }
+                groups.forEach { (name, list) ->
+                item(key = "t-$name", span = { GridItemSpan(maxLineSpan) }) {
+                    Row(Modifier.padding(start = 10.dp, end = 10.dp, top = 14.dp, bottom = 6.dp), verticalAlignment = Alignment.Bottom) {
+                        Text(name, style = HeadingStyle, modifier = Modifier.weight(1f))
+                        Text(countText(list.size, "elemento", "elementos"), style = SmallStyle)
+                    }
+                }
+                items(list.sortedByDescending { it.date }, key = { it.id }) { item ->
                     val selected = item.id in selection
                     Box(
                         Modifier
@@ -113,6 +125,7 @@ fun VaultScreen(state: UiState, vm: LumiViewModel) {
                             }
                         }
                     }
+                }
                 }
             }
         }

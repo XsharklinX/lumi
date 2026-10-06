@@ -19,6 +19,15 @@
         android:name="android.permission.INTERNET"
         tools:node="remove" />
 
+    <!-- Poner una foto de fondo de pantalla desde la propia app. -->
+    <uses-permission android:name="android.permission.SET_WALLPAPER" />
+
+    <!-- El escáner de documentos de Google fija su pantalla en vertical, y Google Play deduce de eso
+         que la app necesita pantalla vertical: dejaría fuera televisores, Chromebooks y otros aparatos
+         que solo van en horizontal. Lumi funciona en los dos sentidos. -->
+    <uses-feature android:name="android.hardware.screen.portrait" android:required="false" />
+    <uses-feature android:name="android.hardware.screen.landscape" android:required="false" />
+
     <application
         android:name=".LumiApp"
         android:allowBackup="true"
@@ -32,7 +41,7 @@
         <!-- Google Play descarga estos modelos junto con la app, en vez de la primera vez que se usan. -->
         <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"
-            android:value="ocr,ica,subject_segment" />
+            android:value="ocr,ica,subject_segment,face" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -71,13 +80,25 @@
         <receiver
             android:name=".PhotoWidget"
             android:exported="false"
-            android:label="Foto de Lumi">
+            android:label="@string/widget_photo_label">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".MemoryWidget"
+            android:exported="false"
+            android:label="@string/widget_memory_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_memory_info" />
         </receiver>
 
         <provider

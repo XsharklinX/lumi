@@ -16,10 +16,10 @@ private fun collection(isVideo: Boolean): Uri =
     if (isVideo) MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
     else MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
 
-/** Copia cada elemento a [relativePath]. Devuelve cuántos se copiaron. */
-fun copyItems(context: Context, items: List<MediaItem>, relativePath: String): Int {
+/** Copia cada elemento a [relativePath]. Devuelve las copias creadas, para poder deshacerlo. */
+fun copyItems(context: Context, items: List<MediaItem>, relativePath: String): List<Uri> {
     val resolver = context.contentResolver
-    var done = 0
+    val done = ArrayList<Uri>()
     for (item in items) {
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, item.name)
@@ -34,9 +34,21 @@ fun copyItems(context: Context, items: List<MediaItem>, relativePath: String): I
             }
             resolver.update(target, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
         }.isSuccess
-        if (copied) done++ else runCatching { resolver.delete(target, null, null) }
+        if (copied) done += target else runCatching { resolver.delete(target, null, null) }
     }
     return done
+}
+
+/** Devuelve cada elemento a la carpeta que tenía: deshace un [moveItems]. */
+fun restorePaths(context: Context, items: List<MediaItem>) {
+    items.forEach { item ->
+        runCatching { context.contentResolver.update(item.uri, ContentValues().apply { put(MediaStore.MediaColumns.RELATIVE_PATH, item.path) }, null, null) }
+    }
+}
+
+/** Vuelve a poner a [item] el nombre que tenía: deshace un [renameItem]. */
+fun restoreName(context: Context, item: MediaItem) {
+    runCatching { context.contentResolver.update(item.uri, ContentValues().apply { put(MediaStore.MediaColumns.DISPLAY_NAME, item.name) }, null, null) }
 }
 
 /** Mueve cada elemento a [relativePath]. Antes hay que tener concedido [writeRequest]. */
@@ -159,5 +171,36 @@ fun saveVideoFrame(context: Context, video: MediaItem, positionMs: Long): Boolea
         resolver.update(target, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
     }.isSuccess
     if (!saved) runCatching { resolver.delete(target, null, null) }
+    return saved
+}
+
+/**
+ * Copia a la galería lo que devolvió el escáner: las páginas como fotos en Pictures/Documentos y
+ * el PDF en Documents/Lumi. Devuelve cuántas cosas se guardaron.
+ */
+fun saveScanned(context: Context, pages: List<Uri>, pdf: Uri?): Int {
+    val resolver = context.contentResolver
+    val stamp = SimpleDateFormat("yyyy-MM-dd HH.mm.ss", Locale.US).format(Date())
+    var saved = 0
+
+    fun copy(from: Uri, collection: Uri, name: String, mime: String, folder: String) {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, folder)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val target = runCatching { resolver.insert(collection, values) }.getOrNull() ?: return
+        val ok = runCatching {
+            resolver.openInputStream(from)!!.use { input -> resolver.openOutputStream(target)!!.use { input.copyTo(it) } }
+            resolver.update(target, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+        }.isSuccess
+        if (ok) saved++ else runCatching { resolver.delete(target, null, null) }
+    }
+
+    pages.forEachIndexed { i, page ->
+        copy(page, MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), "Documento $stamp (${i + 1}).jpg", "image/jpeg", "Pictures/Documentos/")
+    }
+    if (pdf != null) copy(pdf, MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), "Documento $stamp.pdf", "application/pdf", "Documents/Lumi/")
     return saved
 }

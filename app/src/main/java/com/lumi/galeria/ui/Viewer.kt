@@ -1,5 +1,24 @@
 package com.lumi.galeria.ui
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.ui.graphics.drawscope.Stroke
+import android.widget.Toast
+import com.lumi.galeria.data.Filters
+import androidx.compose.ui.draw.blur
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Place
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material3.HorizontalDivider
+import com.lumi.galeria.data.findContacts
+import com.lumi.galeria.data.ContactKind
+import com.lumi.galeria.data.Contact
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Email
+import android.content.Intent
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Size
@@ -41,6 +60,36 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.foundation.combinedClickable
+import com.lumi.galeria.tr
+import com.lumi.galeria.data.albumName
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.aspectRatio
+import com.lumi.galeria.data.readSubtitles
+import com.lumi.galeria.data.findSubtitles
+import com.lumi.galeria.data.cueAt
+import com.lumi.galeria.data.Cue
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.foundation.gestures.horizontalDrag
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
+import androidx.compose.foundation.gestures.awaitHorizontalTouchSlopOrCancellation
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
+import android.media.audiofx.LoudnessEnhancer
+import android.media.audiofx.Equalizer
+import android.media.MediaMetadataRetriever
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.draw.alpha
@@ -159,6 +208,7 @@ private fun tintOf(context: Context, item: MediaItem): Tint {
     return Tint(background, accent)
 }
 
+@OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actions: Actions, link: GridLink) {
     // En Favoritas la lista se congela al entrar: quitar el corazón no hace saltar la foto.
@@ -184,14 +234,45 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
     val background by animateColorAsState(tint.background, tween(400), label = "fondo")
     val accent by animateColorAsState(tint.accent, tween(400), label = "acento")
 
-    var chrome by remember { mutableStateOf(true) }
+    var chrome by remember { mutableStateOf(!screen.slideshow) }
     var more by remember { mutableStateOf(false) }
     // Texto leído en la foto, mientras se enseña para copiarlo.
     var foundText by remember { mutableStateOf<String?>(null) }
     // true = mover, false = copiar, null = cerrado
     var moving by remember { mutableStateOf<Boolean?>(null) }
+    val scanDocument = rememberDocumentScanner(vm)
+    // Hoja con todas las opciones del reproductor.
+    var videoOptions by remember { mutableStateOf(false) }
+    // Cambiar el nombre, desde el menú o manteniendo pulsado el título.
+    var renaming by remember { mutableStateOf(false) }
+    // Panel de información: la foto sube y debajo aparecen sus datos.
+    var info by remember { mutableStateOf(false) }
+    val infoShift by androidx.compose.animation.core.animateFloatAsState(if (info) 1f else 0f, tween(280), label = "info")
     // Vídeo que se está pasando a una copia más ligera.
     var shrinking by remember { mutableStateOf<MediaItem?>(null) }
+    // Foto en movimiento: se mueve mientras se mantiene el dedo, o se abre a pantalla completa.
+    val isMotion = !current.isVideo && state.index[current.id]?.motion == true
+    // En tableta o pantalla dividida, mantener la foto la arrastra a la otra app.
+    val dragOut = canDragOut()
+    val dragThumb = rememberDragThumb(if (dragOut) current else null)
+    val dragView = androidx.compose.ui.platform.LocalView.current
+    var motionHold by remember { mutableStateOf(false) }
+    var motionOpen by remember { mutableStateOf(false) }
+    // Texto de la foto marcado encima de ella, para tocarlo; null si no se está viendo.
+    var textPage by remember { mutableStateOf<com.lumi.galeria.data.TextPage?>(null) }
+    val hasText = !current.isVideo && (state.index[current.id]?.text?.length ?: 0) >= 20
+    fun showText() {
+        vm.readTextPage(current) { page ->
+            textPage = page
+            chrome = false
+            info = false
+        }
+    }
+    LaunchedEffect(current.id) {
+        motionHold = false
+        motionOpen = false
+        textPage = null
+    }
 
     // --- Abrir desde la miniatura, cerrar hacia ella y arrastrar hacia abajo ---
     val open = remember { Animatable(0f) }
@@ -203,8 +284,48 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
     LaunchedEffect(current.id) { link.reveal?.invoke(current.id) }
 
     // --- Vídeo ---
-    val player = remember { ExoPlayer.Builder(context).build() }
-    DisposableEffect(Unit) { onDispose { player.release() } }
+    val player = remember {
+        // Con su propia sesión de sonido, para poder colgarle el volumen extra y el realce de voces.
+        ExoPlayer.Builder(context).build().also { p ->
+            runCatching { p.audioSessionId = (context.getSystemService(Context.AUDIO_SERVICE) as AudioManager).generateAudioSessionId() }
+        }
+    }
+    val sound = remember { SoundEffects(player.audioSessionId) }
+    DisposableEffect(Unit) {
+        onDispose {
+            sound.release()
+            player.release()
+        }
+    }
+    // Al arrastrar la barra: por dónde va, de 0 a 1. Null si no se arrastra.
+    var scrub by remember { mutableStateOf<Float?>(null) }
+    // Mantener el dedo en el vídeo lo pone al doble mientras dure.
+    var holdFast by remember { mutableStateOf(false) }
+    var boost by remember { mutableIntStateOf(100) }
+    var voice by remember { mutableStateOf(false) }
+    // Subtítulos: las frases, si se ven, su tamaño (0 a 2) y cuánto se adelantan o retrasan.
+    var cues by remember { mutableStateOf<List<Cue>>(emptyList()) }
+    var subsOn by remember { mutableStateOf(true) }
+    var subSize by remember { mutableIntStateOf(1) }
+    var subShift by remember { mutableLongStateOf(0L) }
+    val pickSubs = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            val found = withContext(Dispatchers.IO) { readSubtitles(context, uri) }
+            if (found.isEmpty()) vm.say("Ese archivo no tiene subtítulos que Lumi entienda") else {
+                cues = found
+                subsOn = true
+            }
+        }
+    }
+    // Dónde se retomó el vídeo, para ofrecer volver al principio durante unos segundos.
+    var resumedAt by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(resumedAt) {
+        if (resumedAt != null) {
+            delay(6000)
+            resumedAt = null
+        }
+    }
+    LaunchedEffect(boost, voice) { sound.set(boost, voice) }
     var playing by remember { mutableStateOf(false) }
     var position by remember { mutableLongStateOf(0L) }
     var duration by remember { mutableLongStateOf(0L) }
@@ -214,7 +335,7 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
     // Aviso breve en pantalla al saltar con doble toque ("+10 s").
     var flash by remember { mutableStateOf<String?>(null) }
     // Pasar las fotos solas, bloquear los toques durante un vídeo y forzar el apaisado.
-    var slideshow by remember { mutableStateOf(false) }
+    var slideshow by remember { mutableStateOf(screen.slideshow) }
     var touchLock by remember { mutableStateOf(false) }
     var landscape by remember { mutableStateOf(false) }
     val activity = context as Activity
@@ -228,24 +349,43 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
         playing = false
         position = 0
         duration = current.duration
+        cues = emptyList()
+        subShift = 0L
+        resumedAt = null
         if (!current.isVideo) return@LaunchedEffect
         player.setMediaItem(androidx.media3.common.MediaItem.fromUri(current.uri))
+        // Un vídeo largo sigue donde se dejó.
+        val saved = if (current.isExternal) 0L else vm.resumePosition(current)
+        if (saved > 0) {
+            player.seekTo(saved)
+            resumedAt = saved
+        }
         // El vídeo arranca solo al abrirlo, como en cualquier reproductor.
         player.playWhenReady = true
         player.prepare()
-        while (isActive) {
-            if (player.playbackState == Player.STATE_ENDED) {
-                player.pause()
-                player.seekTo(0)
+        if (!current.isExternal) launch { withContext(Dispatchers.IO) { findSubtitles(context, current) }?.let { cues = it } }
+        var lastSave = 0L
+        try {
+            while (isActive) {
+                if (player.playbackState == Player.STATE_ENDED) {
+                    player.pause()
+                    player.seekTo(0)
+                }
+                playing = player.isPlaying
+                position = player.currentPosition
+                if (player.duration > 0) duration = player.duration
+                if (position - lastSave > 5000 || lastSave - position > 5000) {
+                    lastSave = position
+                    if (!current.isExternal) vm.saveResume(current, position)
+                }
+                delay(200)
             }
-            playing = player.isPlaying
-            position = player.currentPosition
-            if (player.duration > 0) duration = player.duration
-            delay(200)
+        } finally {
+            if (!current.isExternal) vm.saveResume(current, player.currentPosition)
         }
     }
 
-    LaunchedEffect(speed) { player.setPlaybackSpeed(speed) }
+    LaunchedEffect(speed, holdFast) { player.setPlaybackSpeed(if (holdFast) 2f else speed) }
     LaunchedEffect(muted) { player.volume = if (muted) 0f else 1f }
     LaunchedEffect(looping) { player.repeatMode = if (looping) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF }
     LaunchedEffect(flash) {
@@ -327,6 +467,7 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
     BackHandler {
         when {
             touchLock -> Unit
+            info -> info = false
             slideshow -> slideshow = false
             else -> close()
         }
@@ -346,9 +487,14 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                     onDragStart = { lifted = 0f },
                     onDragEnd = {
                         when {
+                            // Con la información abierta, bajar la cierra en vez de cerrar la foto.
+                            info && dragY.value > 0f -> {
+                                info = false
+                                scope.launch { dragY.animateTo(0f) }
+                            }
                             dragY.value > size.height * 0.14f -> close()
                             lifted > size.height * 0.09f && dragY.value == 0f -> {
-                                more = true
+                                info = true
                                 scope.launch { dragY.animateTo(0f) }
                             }
                             else -> scope.launch { dragY.animateTo(0f) }
@@ -377,6 +523,7 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
             key = { items.getOrNull(it)?.id ?: it },
             beyondViewportPageCount = 1,
             pageSpacing = 16.dp,
+            userScrollEnabled = textPage == null,
             modifier = Modifier.graphicsLayer {
                 val p = open.value
                 val pulled = if (box.height > 0) (abs(dragY.value) / (box.height * 0.35f)).coerceIn(0f, 1f) else 0f
@@ -392,12 +539,12 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                     scaleX = scale
                     scaleY = scale
                     translationX = lerp(rect.center.x - box.width / 2f, 0f, p)
-                    translationY = lerp(rect.center.y - box.height / 2f, dragY.value, p)
+                    translationY = lerp(rect.center.y - box.height / 2f, dragY.value, p) - infoShift * box.height * 0.3f
                 } else {
                     val scale = lerp(0.9f, fullScale, p)
                     scaleX = scale
                     scaleY = scale
-                    translationY = dragY.value
+                    translationY = dragY.value - infoShift * box.height * 0.3f
                     alpha = p
                 }
             },
@@ -410,30 +557,204 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                     player = if (active && settled) player else null,
                     playing = playing,
                     flash = if (active) flash else null,
-                    onTap = { chrome = !chrome },
+                    onTap = { if (info) info = false else chrome = !chrome },
                     onToggle = { if (player.isPlaying) player.pause() else player.play() },
                     onSeekBy = ::seekBy,
                     onAdjust = ::adjust,
+                    fast = active && holdFast,
+                    onHold = { holdFast = it },
                 )
             } else {
-                ZoomablePhoto(item, active = active, onTap = { chrome = !chrome })
+                val moves = !item.isExternal && state.index[item.id]?.motion == true
+                Box(Modifier.fillMaxSize()) {
+                    if (!item.isExternal) Backdrop(item)
+                    ZoomablePhoto(
+                        item, active = active, locked = active && textPage != null, onTap = { if (info) info = false else chrome = !chrome },
+                        onHold = when {
+                            moves -> ({ held -> motionHold = held })
+                            dragOut && !item.isExternal -> ({ held -> if (held) startDragOut(dragView, context, listOf(item), dragThumb) })
+                            else -> null
+                        },
+                    )
+                    if (active && moves && motionHold) MotionLayer(item, Modifier.fillMaxSize())
+                }
             }
         }
 
-        AnimatedVisibility(chrome && settled && !state.pip && !slideshow && !touchLock, enter = fadeIn(), exit = fadeOut()) {
+        // Subtítulos: por encima de la imagen, y más arriba cuando están los controles.
+        textPage?.let { page -> LiveText(page) { textPage = null } }
+
+        if (current.isVideo && subsOn && cues.isNotEmpty() && settled) {
+            cueAt(cues, position - subShift)?.let { cue ->
+                Text(
+                    cue.text,
+                    style = LabelStyle.copy(fontSize = listOf(15, 19, 24)[subSize].sp, lineHeight = listOf(20, 25, 31)[subSize].sp),
+                    color = Color.White,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(start = 24.dp, end = 24.dp, bottom = if (chrome) 260.dp else 40.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black.copy(alpha = 0.55f))
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
+        }
+        resumedAt?.let { at ->
+            Text(
+                "Sigues en ${formatDuration(at)} · Desde el principio",
+                style = LabelStyle,
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 64.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.65f))
+                    .clickable {
+                        player.seekTo(0)
+                        resumedAt = null
+                    }
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+            )
+        }
+        AnimatedVisibility(
+            info && settled,
+            enter = slideInVertically { it } + fadeIn(),
+            exit = slideOutVertically { it } + fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            // Las demás fotos de ese mismo día, de las que se están viendo.
+            val sameDay = remember(current.id, items) {
+                val day = dayTitle(current.date)
+                items.filter { !it.isExternal && dayTitle(it.date) == day }
+            }
+            // Más como esta: lo que comparte con otras fotos. Se calcula aparte para no frenar el visor.
+            val related by produceState(emptyList<Pair<String, List<MediaItem>>>(), current.id, state.index, state.people) {
+                value = withContext(Dispatchers.Default) { relatedTo(current, state) }
+            }
+            InfoPanel(
+                related = related,
+                onRelated = { list, target -> vm.open(Screen.Viewer(Source.Ids(list.mapTo(HashSet()) { it.id }), target.id)) },
+                item = current,
+                place = state.places[current.id] ?: state.index[current.id]?.takeIf { it.hasPlace }?.let { nearestCity(it.lat.toDouble(), it.lon.toDouble(), 90.0)?.name },
+                things = state.index[current.id]?.labels.orEmpty().mapNotNull { WORDS[it]?.firstOrNull() }.distinct().take(6),
+                sameDay = sameDay,
+                onJump = { target ->
+                    val at = items.indexOfFirst { it.id == target.id }
+                    if (at >= 0) scope.launch { pager.scrollToPage(at) }
+                },
+                onPlace = { name ->
+                    vm.searchQuery = ""
+                    vm.searchFilters = Filters(place = name)
+                    vm.open(Screen.Search)
+                },
+                onThing = { word ->
+                    vm.searchQuery = ""
+                    vm.searchFilters = Filters(thing = word)
+                    vm.open(Screen.Search)
+                },
+                onClose = { info = false },
+            )
+        }
+        AnimatedVisibility(chrome && settled && !info && !state.pip && !slideshow && !touchLock, enter = fadeIn(), exit = fadeOut()) {
             Box(Modifier.fillMaxSize()) {
-                Box(
+                // Arriba: qué es y cuándo se hizo, y lo que se usa sin pensar (favorita y más opciones).
+                Row(
                     Modifier
                         .fillMaxWidth()
-                        .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent)))
+                        .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.62f), Color.Transparent)))
                         .statusBarsPadding()
-                        .padding(start = 10.dp, top = 8.dp, bottom = 28.dp),
+                        .padding(start = 4.dp, end = 4.dp, top = 6.dp, bottom = 30.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack, "Volver",
-                        Modifier.clip(CircleShape).clickable { close() }.padding(10.dp).size(24.dp),
-                        tint = Color.White,
-                    )
+                    BarIcon(Icons.AutoMirrored.Filled.ArrowBack, "Volver", { close() }, Color.White)
+                    // Mantener pulsado el título deja cambiar el nombre del archivo.
+                    Column(
+                        Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).combinedClickable(
+                            onClick = {},
+                            onLongClick = {
+                                if (!current.isExternal) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    renaming = true
+                                }
+                            },
+                        ).padding(start = 2.dp, top = 2.dp, bottom = 2.dp),
+                    ) {
+                        Text(
+                            if (current.isExternal) current.name else dayTitle(current.date),
+                            style = HeadingStyle.copy(fontSize = 16.sp),
+                            color = Color.White,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        if (!current.isExternal) {
+                            Text(
+                                timeText(current.date) + (if (current.bucket.isNotEmpty()) " · ${albumName(current.bucket)}" else "") +
+                                    if (current.isVideo && duration > 0) " · ${formatDuration(duration)}" else "",
+                                style = SmallStyle,
+                                color = Color.White.copy(alpha = 0.8f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                    if (hasText && textPage == null) {
+                        Row(
+                            Modifier
+                                .padding(end = 4.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.35f))
+                                .clickable { showText() }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Icon(TextIcon, null, Modifier.size(14.dp), tint = Color.White)
+                            Text("Texto", style = LabelStyle, color = Color.White)
+                        }
+                    }
+                    if (isMotion) {
+                        Row(
+                            Modifier
+                                .padding(end = 4.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.35f))
+                                .clickable { motionOpen = true }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Box(Modifier.size(7.dp).clip(CircleShape).background(Color.White))
+                            Text("Movimiento", style = LabelStyle, color = Color.White)
+                        }
+                    }
+                    if (stack != null) {
+                        Text(
+                            "${stack.members.size} parecidas",
+                            style = LabelStyle,
+                            color = OnTint,
+                            modifier = Modifier
+                                .padding(end = 4.dp)
+                                .clip(CircleShape)
+                                .background(accent)
+                                .clickable { leaveTo(Screen.StackView(current.id)) }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
+                    }
+                    if (!current.isExternal) {
+                        BarIcon(
+                            if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                            if (isFavorite) "Quitar de favoritas" else "Favorita",
+                            {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                vm.toggleFavorite(listOf(current.id))
+                            },
+                            if (isFavorite) Color(0xFFFF4D6D) else Color.White,
+                        )
+                        BarIcon(Icons.Filled.MoreVert, "Más", { more = true }, Color.White)
+                    }
                 }
 
                 Column(
@@ -443,62 +764,47 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                         .background(
                             Brush.verticalGradient(
                                 0f to Color.Transparent,
-                                0.55f to background.copy(alpha = 0.88f),
+                                0.5f to background.copy(alpha = 0.85f),
                                 1f to background,
                             ),
                         )
                         .navigationBarsPadding()
-                        .padding(start = 16.dp, end = 16.dp, top = 72.dp, bottom = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                        .padding(start = 12.dp, end = 12.dp, top = 56.dp, bottom = 8.dp),
                 ) {
-                    if (stack != null) {
-                        Text(
-                            "Pila de ${stack.members.size} parecidas",
-                            style = LabelStyle,
-                            color = OnTint,
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .background(accent)
-                                .clickable { leaveTo(Screen.StackView(current.id)) }
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                        )
-                        Spacer(Modifier.height(6.dp))
-                    }
-                    if (current.isExternal) {
-                        Text(current.name, style = TitleStyle.copy(fontSize = 20.sp), color = Color.White, maxLines = 1)
-                    } else {
-                        Text(dayTitle(current.date), style = TitleStyle.copy(fontSize = 22.sp), color = Color.White)
-                        Text(
-                            timeText(current.date) + if (current.bucket.isNotEmpty()) " · ${current.bucket}" else "",
-                            style = SmallStyle,
-                            color = Color.White.copy(alpha = 0.85f),
-                        )
+                    if (current.isVideo && items.size > 1 && scrub == null) {
+                        Filmstrip(items, pager.currentPage.coerceIn(0, items.lastIndex)) { index ->
+                            scope.launch { if (abs(index - pager.currentPage) <= 3) pager.animateScrollToPage(index) else pager.scrollToPage(index) }
+                        }
                     }
                     if (current.isVideo) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Box(
-                                Modifier.size(42.dp).clip(CircleShape).background(accent).clickable { if (playing) player.pause() else player.play() },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                if (playing) PauseGlyph(OnTint) else Icon(Icons.Filled.PlayArrow, "Reproducir", tint = OnTint)
-                            }
-                            Slider(
-                                value = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f,
-                                onValueChange = { fraction ->
-                                    position = (fraction * duration).toLong()
-                                    player.seekTo(position)
-                                },
-                                colors = SliderDefaults.colors(
-                                    thumbColor = accent,
-                                    activeTrackColor = accent,
-                                    inactiveTrackColor = Color.White.copy(alpha = 0.2f),
-                                ),
-                                modifier = Modifier.weight(1f),
-                            )
-                            Text("${formatDuration(position)} / ${formatDuration(duration)}", style = SmallStyle, color = Color.White)
+                        scrub?.let { at -> SeekPreview(current, (at * duration).toLong(), at) }
+                        Slider(
+                            value = if (duration > 0) (position.toFloat() / duration).coerceIn(0f, 1f) else 0f,
+                            onValueChange = { fraction ->
+                                scrub = fraction
+                                position = (fraction * duration).toLong()
+                                player.seekTo(position)
+                            },
+                            onValueChangeFinished = { scrub = null },
+                            colors = SliderDefaults.colors(
+                                thumbColor = accent,
+                                activeTrackColor = accent,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.22f),
+                            ),
+                            modifier = Modifier.fillMaxWidth().height(28.dp),
+                        )
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp)) {
+                            Text(formatDuration(position), style = SmallStyle, color = Color.White)
+                            Spacer(Modifier.weight(1f))
+                            Text(formatDuration(duration), style = SmallStyle, color = Color.White.copy(alpha = 0.75f))
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 4.dp).horizontalScroll(rememberScrollState())) {
-                            PlayerChip(if (speed == 1f) "Velocidad 1×" else "Velocidad ${if (speed % 1f == 0f) speed.toInt().toString() else speed.toString()}×", speed != 1f, accent) {
+                        // Una sola fila de mandos: velocidad, saltos, reproducir, sonido y el resto de opciones.
+                        Row(
+                            Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                        ) {
+                            RoundControl(if (speed % 1f == 0f) "${speed.toInt()}×" else "$speed×", "Velocidad", speed != 1f || holdFast, accent) {
                                 speed = when (speed) {
                                     1f -> 1.5f
                                     1.5f -> 2f
@@ -506,47 +812,110 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                                     else -> 1f
                                 }
                             }
-                            PlayerChip(if (muted) "Sin sonido" else "Con sonido", muted, accent) { muted = !muted }
-                            PlayerChip("Repetir", looping, accent) { looping = !looping }
-                            PlayerChip("Fotograma", false, accent) { vm.saveFrame(current, position) }
-                            PlayerChip("Girar", landscape, accent) { landscape = !landscape }
-                            PlayerChip("Flotante", false, accent) { actions.pip() }
-                            PlayerChip("Bloquear toques", false, accent) {
-                                touchLock = true
-                                chrome = false
+                            RoundControl("−10", "Atrás 10 segundos", false, accent) { seekBy(-10_000) }
+                            Box(
+                                Modifier.size(60.dp).clip(CircleShape).background(accent).clickable { if (playing) player.pause() else player.play() },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (playing) PauseGlyph(OnTint, Modifier.size(24.dp)) else Icon(Icons.Filled.PlayArrow, "Reproducir", Modifier.size(32.dp), tint = OnTint)
                             }
-                            if (!current.isExternal) PlayerChip("Recortar", false, accent) { leaveTo(Screen.Trim(current.id)) }
+                            RoundControl("+10", "Adelante 10 segundos", false, accent) { seekBy(10_000) }
+                            Box(
+                                Modifier.size(44.dp).clip(CircleShape).clickable { videoOptions = true },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(Icons.Filled.Settings, "Opciones del vídeo", Modifier.size(24.dp), tint = Color.White)
+                                // Un punto avisa de que hay algo cambiado dentro.
+                                if (muted || looping || boost > 100 || voice || (cues.isNotEmpty() && subsOn)) {
+                                    Box(Modifier.align(Alignment.TopEnd).padding(9.dp).size(7.dp).clip(CircleShape).background(accent))
+                                }
+                            }
                         }
                     } else if (items.size > 1) {
                         Filmstrip(items, pager.currentPage.coerceIn(0, items.lastIndex)) { index ->
                             // Un salto corto se ve pasar; uno largo va directo.
                             scope.launch { if (abs(index - pager.currentPage) <= 3) pager.animateScrollToPage(index) else pager.scrollToPage(index) }
                         }
-                    } else {
-                        Spacer(Modifier.height(10.dp))
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // Teléfonos, correos y webs escritos en la foto, con su botón.
+                    if (!current.isVideo) {
+                        val text = state.index[current.id]?.text.orEmpty()
+                        val contacts = remember(current.id, text) { findContacts(text) }
+                        if (contacts.isNotEmpty()) ContactRow(contacts)
+                    }
+                    // Acciones: pocas y sin cajas, para que la foto siga siendo lo importante.
+                    Row(Modifier.fillMaxWidth()) {
                         if (current.isExternal) {
                             // Lo abierto desde la carpeta privada es una copia temporal: no se ofrece enviarla.
                             if (current.uri.scheme != "file") {
-                                ActionChip(Icons.Filled.Share, "Enviar", Modifier.weight(1f), accent) { actions.share(listOf(current)) }
+                                ToolButton(Icons.Filled.Share, "Enviar", Modifier.weight(1f)) { actions.share(listOf(current)) }
                             }
                         } else {
-                            ActionChip(Icons.Filled.Share, "Enviar", Modifier.weight(1f), accent) { actions.share(listOf(current)) }
-                            ActionChip(
-                                if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, "Favorita",
-                                Modifier.weight(1f), accent, filled = isFavorite,
-                            ) {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                vm.toggleFavorite(listOf(current.id))
+                            ToolButton(Icons.Filled.Share, "Enviar", Modifier.weight(1f)) { actions.share(listOf(current)) }
+                            if (current.isVideo) {
+                                ToolButton(Icons.Filled.Edit, "Editar", Modifier.weight(1f)) { leaveTo(Screen.VideoEditor(current.id)) }
+                            } else {
+                                ToolButton(Icons.Filled.Edit, "Editar", Modifier.weight(1f)) { leaveTo(Screen.Editor(current.id)) }
                             }
-                            if (!current.isVideo) {
-                                ActionChip(Icons.Filled.Edit, "Editar", Modifier.weight(1f), accent) { leaveTo(Screen.Editor(current.id)) }
-                            }
-                            ActionChip(Icons.Filled.Delete, "Borrar", Modifier.weight(1f), accent) { actions.trash(listOf(current)) {} }
-                            ActionChip(Icons.Filled.MoreVert, "Más", Modifier.weight(1f), accent) { more = true }
+                            ToolButton(Icons.Filled.Delete, "Borrar", Modifier.weight(1f)) { actions.trash(listOf(current)) {} }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // Todo lo demás del reproductor, ordenado por grupos en vez de en una fila sin fin.
+    if (videoOptions && current.isVideo) {
+        ModalBottomSheet(onDismissRequest = { videoOptions = false }, containerColor = Lumi.Surface) {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text("Opciones del vídeo", style = HeadingStyle.copy(fontSize = 20.sp), modifier = Modifier.padding(bottom = 6.dp))
+                OptionGroup("Reproducción")
+                OptionRow("Velocidad", if (speed % 1f == 0f) "${speed.toInt()}×" else "$speed×") {
+                    speed = when (speed) {
+                        1f -> 1.5f
+                        1.5f -> 2f
+                        2f -> 0.5f
+                        else -> 1f
+                    }
+                }
+                OptionRow("Repetir", if (looping) "Sí" else "No") { looping = !looping }
+                OptionRow("Girar la pantalla", if (landscape) "Sí" else "No") { landscape = !landscape }
+                OptionRow("Ventana flotante", null, "Sigue viéndose encima de otras apps") { videoOptions = false; actions.pip() }
+                OptionRow("Bloquear la pantalla", null, "Para que un toque sin querer no lo pare") {
+                    videoOptions = false
+                    touchLock = true
+                    chrome = false
+                }
+                OptionGroup("Sonido")
+                OptionRow("Sonido", if (muted) "Silenciado" else "Activado") { muted = !muted }
+                OptionRow("Volumen extra", "$boost %", "Para vídeos grabados muy bajos") { boost = if (boost >= 200) 100 else boost + 50 }
+                OptionRow("Realzar voces", if (voice) "Sí" else "No", "Se entiende mejor a quien habla") { voice = !voice }
+                OptionGroup("Subtítulos")
+                if (cues.isEmpty()) {
+                    OptionRow("Cargar subtítulos", null, "Elige un archivo .srt del teléfono") {
+                        pickSubs.launch(arrayOf("application/x-subrip", "text/plain", "application/octet-stream", "*/*"))
+                    }
+                } else {
+                    OptionRow("Mostrar", if (subsOn) "Sí" else "No") { subsOn = !subsOn }
+                    OptionRow("Tamaño", listOf("Pequeño", "Mediano", "Grande")[subSize]) { subSize = (subSize + 1) % 3 }
+                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Sincronizar", style = LabelStyle.copy(fontSize = 15.sp))
+                            Text(if (subShift == 0L) "Sin cambios" else String.format(java.util.Locale.US, "%+.1f s", subShift / 1000.0), style = SmallStyle)
+                        }
+                        PillButton("−0,5 s", { subShift -= 500 }, primary = false)
+                        PillButton("+0,5 s", { subShift += 500 }, primary = false)
+                    }
+                    OptionRow("Otro archivo", null) { pickSubs.launch(arrayOf("*/*")) }
+                }
+                if (!current.isExternal) {
+                    OptionGroup("Crear")
+                    OptionRow("Guardar fotograma", null, "El momento que se ve, como foto") { videoOptions = false; vm.saveFrame(current, position) }
+                    OptionRow("Hacer un GIF", null, "Un trozo de hasta 8 segundos") { videoOptions = false; leaveTo(Screen.Gif(current.id)) }
                 }
             }
         }
@@ -612,10 +981,14 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
             item = current,
             place = state.index[current.id]?.takeIf { it.hasPlace }?.let { nearestCity(it.lat.toDouble(), it.lon.toDouble(), 90.0)?.name },
             things = state.index[current.id]?.labels.orEmpty().mapNotNull { WORDS[it]?.firstOrNull() }.distinct().take(6),
-            onRename = { name ->
-                more = false
-                actions.write(listOf(current)) { vm.rename(current, name) }
-            },
+            onInfo = { more = false; info = true },
+            motion = isMotion,
+            onMotion = { more = false; motionOpen = true },
+            landscape = landscape,
+            onRename = { more = false; renaming = true },
+            onSetAs = { more = false; leaveTo(Screen.Wallpaper(current.id)) },
+            onRotate = { more = false; leaveTo(Screen.Rotate(current.id)) },
+            onScreen = { more = false; landscape = !landscape },
             onDismiss = { more = false },
             onShareClean = { more = false; actions.shareWithoutLocation(current) },
             onUseAs = { more = false; actions.useAs(current) },
@@ -634,9 +1007,20 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
             onMarkup = { more = false; leaveTo(Screen.Markup(current.id)) },
             onText = {
                 more = false
-                vm.readText(current) { foundText = it }
+                showText()
             },
             onCutout = { more = false; leaveTo(Screen.Cutout(current.id)) },
+            onPortrait = { more = false; leaveTo(Screen.Portrait(current.id)) },
+            onScan = { more = false; scanDocument() },
+            onCopyImage = {
+                more = false
+                // Se copia como imagen: en un chat o un documento basta con mantener pulsado y pegar.
+                runCatching {
+                    context.getSystemService(android.content.ClipboardManager::class.java)
+                        .setPrimaryClip(android.content.ClipData.newUri(context.contentResolver, "Lumi", current.uri))
+                }
+                vm.say("Copiada. Mantén pulsado en un chat para pegarla.")
+            },
             onShrink = {
                 more = false
                 player.pause()
@@ -645,6 +1029,22 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
         )
     }
     shrinking?.let { video -> ShrinkSheet(video, vm) { shrinking = null } }
+    if (motionOpen && isMotion) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { motionOpen = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) { MotionScreen(current, vm) { motionOpen = false } }
+    }
+    if (renaming) {
+        RenameDialog(
+            current,
+            onDone = { name ->
+                renaming = false
+                actions.write(listOf(current)) { vm.rename(current, name) }
+            },
+            onDismiss = { renaming = false },
+        )
+    }
     moving?.let { move ->
         val chosen = listOf(current)
         AlbumPickerSheet(
@@ -692,25 +1092,280 @@ private fun Filmstrip(items: List<MediaItem>, page: Int, onPick: (Int) -> Unit) 
     }
 }
 
+/** Botones para llamar, escribir o abrir lo que aparece escrito en la foto. Lumi no se conecta: abre otra app. */
 @Composable
-private fun ActionChip(icon: ImageVector, label: String, modifier: Modifier, accent: Color, filled: Boolean = false, onClick: () -> Unit) {
-    val content = if (filled) OnTint else accent
-    Column(
-        modifier
-            .clip(RoundedCornerShape(18.dp))
-            .background(if (filled) accent else accent.copy(alpha = 0.16f))
-            .clickable(onClick = onClick)
-            .padding(vertical = 11.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(3.dp),
+private fun ContactRow(contacts: List<Contact>) {
+    val context = LocalContext.current
+    Row(Modifier.horizontalScroll(rememberScrollState()).padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        contacts.forEach { contact ->
+            val (icon, intent) = when (contact.kind) {
+                ContactKind.PHONE -> Icons.Filled.Phone to Intent(Intent.ACTION_DIAL, android.net.Uri.parse("tel:" + contact.value.filter { it.isDigit() || it == '+' }))
+                ContactKind.EMAIL -> Icons.Filled.Email to Intent(Intent.ACTION_SENDTO, android.net.Uri.parse("mailto:" + contact.value))
+                ContactKind.WEB -> Icons.AutoMirrored.Filled.ExitToApp to Intent(
+                    Intent.ACTION_VIEW,
+                    android.net.Uri.parse(if (contact.value.startsWith("http")) contact.value else "https://" + contact.value),
+                )
+            }
+            Row(
+                Modifier.clip(CircleShape).background(Color.White.copy(alpha = 0.16f))
+                    .clickable { runCatching { context.startActivity(intent) } }
+                    .padding(start = 10.dp, end = 14.dp, top = 7.dp, bottom = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(icon, null, Modifier.size(16.dp), tint = Color.White)
+                Text(contact.value, style = LabelStyle, color = Color.White, maxLines = 1)
+            }
+        }
+    }
+}
+
+/**
+ * El texto de la foto marcado encima de ella. Tocar una línea la elige; arrastrar elige varias
+ * seguidas. Abajo, copiar lo elegido (o todo) y los teléfonos, correos y webs que haya, a un toque.
+ */
+@Composable
+private fun LiveText(page: com.lumi.galeria.data.TextPage, onClose: () -> Unit) {
+    BackHandler(onBack = onClose)
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    var chosen by remember(page) { mutableStateOf(emptySet<Int>()) }
+    var anchor by remember(page) { mutableStateOf(-1) }
+    var area by remember { mutableStateOf(IntSize.Zero) }
+    val lines = page.lines
+    val picked = if (chosen.isEmpty()) lines.map { it.text } else chosen.sorted().map { lines[it].text }
+    val text = picked.joinToString("\n")
+    val contacts = remember(text) { findContacts(text) }
+    val linked = remember(page) { lines.indices.filter { findContacts(lines[it].text).isNotEmpty() }.toSet() }
+
+    /** Dónde se dibuja la foto, ajustada a la pantalla sin deformarla. */
+    fun frame(): androidx.compose.ui.geometry.Rect {
+        val w = area.width.toFloat()
+        val h = area.height.toFloat()
+        val fw = minOf(w, h * page.aspect)
+        val fh = fw / page.aspect
+        return androidx.compose.ui.geometry.Rect((w - fw) / 2, (h - fh) / 2, (w + fw) / 2, (h + fh) / 2)
+    }
+
+    fun lineAt(point: Offset): Int {
+        val f = frame()
+        val x = (point.x - f.left) / f.width
+        val y = (point.y - f.top) / f.height
+        val slack = 0.012f
+        return lines.indexOfFirst { x in it.left - slack..it.right + slack && y in it.top - slack..it.bottom + slack }
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        Canvas(
+            Modifier
+                .fillMaxSize()
+                .onSizeChanged { area = it }
+                .pointerInput(page) {
+                    detectTapGestures { point ->
+                        val hit = lineAt(point)
+                        if (hit < 0) {
+                            chosen = emptySet()
+                        } else {
+                            chosen = if (hit in chosen) chosen - hit else chosen + hit
+                            anchor = hit
+                        }
+                    }
+                }
+                .pointerInput(page) {
+                    detectDragGestures(
+                        onDragStart = { start ->
+                            anchor = lineAt(start)
+                            if (anchor >= 0) chosen = setOf(anchor)
+                        },
+                    ) { change, _ ->
+                        val hit = lineAt(change.position)
+                        if (anchor >= 0 && hit >= 0) chosen = (minOf(anchor, hit)..maxOf(anchor, hit)).toSet()
+                        change.consume()
+                    }
+                },
+        ) {
+            drawRect(Color.Black.copy(alpha = 0.3f))
+            val f = frame()
+            lines.forEachIndexed { i, line ->
+                val topLeft = Offset(f.left + line.left * f.width, f.top + line.top * f.height)
+                val size = androidx.compose.ui.geometry.Size((line.right - line.left) * f.width, (line.bottom - line.top) * f.height)
+                val tone = when {
+                    i in chosen -> Color(0xFFB9A8FF).copy(alpha = 0.5f)
+                    i in linked -> Color(0xFF4F8DF7).copy(alpha = 0.35f)
+                    else -> Color(0xFFFFD43B).copy(alpha = 0.22f)
+                }
+                drawRoundRect(tone, topLeft, size, androidx.compose.ui.geometry.CornerRadius(6f))
+                drawRoundRect(
+                    if (i in chosen) Color(0xFFB9A8FF) else Color.White.copy(alpha = 0.55f), topLeft, size,
+                    androidx.compose.ui.geometry.CornerRadius(6f), style = Stroke(1.5.dp.toPx()),
+                )
+            }
+        }
+        Column(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha = 0.78f)).navigationBarsPadding().padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                if (chosen.isEmpty()) "Toca o arrastra sobre el texto para elegir un trozo" else countText(chosen.size, "línea elegida", "líneas elegidas"),
+                style = SmallStyle, color = Color.White.copy(alpha = 0.8f),
+            )
+            if (chosen.isNotEmpty()) Text(text, style = LabelStyle, color = Color.White, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            if (contacts.isNotEmpty()) ContactRow(contacts)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PillButton(if (chosen.isEmpty()) "Copiar todo" else "Copiar", onClick = {
+                    clipboard.setText(AnnotatedString(text))
+                    Toast.makeText(context, tr("Texto copiado"), Toast.LENGTH_SHORT).show()
+                }, modifier = Modifier.weight(1f))
+                PillButton("Compartir", onClick = {
+                    runCatching {
+                        context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), null))
+                    }
+                }, modifier = Modifier.weight(1f), primary = false)
+                PillButton("Cerrar", onClick = onClose, modifier = Modifier.weight(1f), primary = false)
+            }
+        }
+    }
+}
+
+/** Mando redondo de la fila del reproductor: un texto corto, encendido si cambia algo. */
+@Composable
+private fun RoundControl(label: String, description: String, on: Boolean, accent: Color, onClick: () -> Unit) {
+    Box(
+        Modifier.size(44.dp).clip(CircleShape).background(if (on) accent else Color.White.copy(alpha = 0.12f)).clickable(onClick = onClick)
+            .semantics { contentDescription = tr(description) },
+        contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, null, Modifier.size(20.dp), tint = content)
-        Text(label, style = SmallStyle, color = content, maxLines = 1)
+        Text(label, style = LabelStyle.copy(fontSize = 13.sp, fontWeight = FontWeight.Bold), color = if (on) OnTint else Color.White, maxLines = 1)
+    }
+}
+
+/** Acción de abajo del visor: icono con su nombre, sin caja alrededor. */
+@Composable
+private fun ToolButton(icon: ImageVector, label: String, modifier: Modifier, onClick: () -> Unit) {
+    Column(
+        modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Icon(icon, null, Modifier.size(23.dp), tint = Color.White)
+        Text(label, style = SmallStyle, color = Color.White.copy(alpha = 0.9f), maxLines = 1)
     }
 }
 
 @Composable
-private fun ZoomablePhoto(item: MediaItem, active: Boolean, onTap: () -> Unit) {
+private fun OptionGroup(title: String) {
+    Text(title, style = SmallStyle.copy(fontSize = 13.sp), color = Lumi.Accent, modifier = Modifier.padding(top = 14.dp, bottom = 2.dp))
+}
+
+/** Una opción de la hoja: nombre, explicación corta y, a la derecha, cómo está ahora. */
+@Composable
+private fun OptionRow(title: String, value: String?, hint: String? = null, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = LabelStyle.copy(fontSize = 15.sp))
+            if (hint != null) Text(hint, style = SmallStyle)
+        }
+        if (value != null) Text(value, style = LabelStyle, color = Lumi.Accent)
+    }
+}
+
+/** El fotograma de [atMs] mientras se arrastra la barra, a la altura de [fraction]. */
+@Composable
+private fun SeekPreview(item: MediaItem, atMs: Long, fraction: Float) {
+    val context = LocalContext.current
+    val retriever = remember(item.id) { MediaMetadataRetriever() }
+    DisposableEffect(retriever) { onDispose { runCatching { retriever.release() } } }
+    var ready by remember(item.id) { mutableStateOf(false) }
+    // Un fotograma cada medio segundo de vídeo basta: pedir uno por cada píxel del dedo atasca.
+    val frame by produceState<Bitmap?>(null, item.id, atMs / 500) {
+        val shot = withContext(Dispatchers.IO) {
+            synchronized(retriever) {
+                runCatching {
+                    if (!ready) {
+                        retriever.setDataSource(context, item.uri)
+                        ready = true
+                    }
+                    retriever.getScaledFrameAtTime(atMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 360, 360)
+                }.getOrNull()
+            }
+        }
+        if (shot != null) value = shot
+    }
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+        val width = 150.dp
+        Column(
+            Modifier.padding(start = (maxWidth - width) * fraction.coerceIn(0f, 1f)).width(width),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(Modifier.fillMaxWidth().aspectRatio(16f / 10f).clip(RoundedCornerShape(10.dp)).background(Color.Black).border(2.dp, Color.White, RoundedCornerShape(10.dp))) {
+                frame?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+            }
+            Text(formatDuration(atMs), style = LabelStyle, color = Color.White, modifier = Modifier.padding(top = 4.dp))
+        }
+    }
+}
+
+/**
+ * Volumen por encima del máximo y realce de voces, colgados de la sesión de sonido del vídeo.
+ * Si el teléfono no los admite, no hacen nada.
+ */
+private class SoundEffects(private val session: Int) {
+    private var loudness: LoudnessEnhancer? = null
+    private var equalizer: Equalizer? = null
+
+    fun set(volume: Int, voice: Boolean) {
+        runCatching {
+            if (volume > 100 || loudness != null) {
+                val effect = loudness ?: LoudnessEnhancer(session).also { loudness = it }
+                // 150 % son unos 3,5 dB más; 200 %, unos 6 dB.
+                effect.setTargetGain(((volume - 100) * 12).coerceAtLeast(0))
+                effect.enabled = volume > 100
+            }
+        }
+        runCatching {
+            if (voice || equalizer != null) {
+                val eq = equalizer ?: Equalizer(0, session).also { equalizer = it }
+                val (low, high) = eq.bandLevelRange.let { it[0] to it[1] }
+                for (band in 0 until eq.numberOfBands) {
+                    val hz = eq.getCenterFreq(band.toShort()) / 1000
+                    // Las voces viven entre 1 y 4 kHz: se suben; los graves que las tapan, se bajan.
+                    val level = when {
+                        hz in 1000..4000 -> 600
+                        hz < 250 -> -400
+                        else -> 0
+                    }
+                    eq.setBandLevel(band.toShort(), level.coerceIn(low.toInt(), high.toInt()).toShort())
+                }
+                eq.enabled = voice
+            }
+        }
+    }
+
+    fun release() {
+        runCatching { loudness?.release() }
+        runCatching { equalizer?.release() }
+    }
+}
+
+/**
+ * Lo que rodea a una foto que no llena la pantalla: la misma foto, muy desenfocada y oscura, en
+ * vez de bandas negras. Se parte de una miniatura diminuta, que al ampliarse ya sale borrosa.
+ */
+@Composable
+private fun Backdrop(item: MediaItem) {
+    AsyncImage(
+        Thumb(item.uri, 64, item.modified), null,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.fillMaxSize().then(if (android.os.Build.VERSION.SDK_INT >= 31) Modifier.blur(40.dp) else Modifier),
+    )
+    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)))
+}
+
+@Composable
+private fun ZoomablePhoto(item: MediaItem, active: Boolean, onTap: () -> Unit, onHold: ((Boolean) -> Unit)? = null, locked: Boolean = false) {
     var scale by remember { mutableFloatStateOf(1f) }
     // Al ampliar se carga la foto a mucha más resolución; se queda cargada mientras se mira.
     var sharp by remember { mutableStateOf(false) }
@@ -720,6 +1375,7 @@ private fun ZoomablePhoto(item: MediaItem, active: Boolean, onTap: () -> Unit) {
     var offset by remember { mutableStateOf(Offset.Zero) }
     var size by remember { mutableStateOf(IntSize.Zero) }
     val tap by rememberUpdatedState(onTap)
+    val hold by rememberUpdatedState(onHold)
 
     fun clamp(value: Offset, forScale: Float): Offset {
         val maxX = size.width * (forScale - 1) / 2
@@ -727,8 +1383,9 @@ private fun ZoomablePhoto(item: MediaItem, active: Boolean, onTap: () -> Unit) {
         return Offset(value.x.coerceIn(-maxX, maxX), value.y.coerceIn(-maxY, maxY))
     }
 
-    LaunchedEffect(active) {
-        if (!active) {
+    LaunchedEffect(active, locked) {
+        // Con el texto marcado encima, la foto se queda entera y quieta para que las marcas coincidan.
+        if (!active || locked) {
             scale = 1f
             offset = Offset.Zero
         }
@@ -741,13 +1398,26 @@ private fun ZoomablePhoto(item: MediaItem, active: Boolean, onTap: () -> Unit) {
             .pointerInput(Unit) {
                 detectTapGestures(
                     onTap = { tap() },
+                    // Foto en movimiento: se mueve mientras el dedo sigue encima.
+                    onPress = {
+                        tryAwaitRelease()
+                        hold?.invoke(false)
+                    },
+                    onLongPress = { if (scale == 1f) hold?.invoke(true) },
                     onDoubleTap = { point ->
-                        if (scale > 1f) {
+                        val next = when {
+                            scale < 2f -> 2.5f
+                            scale < 4.5f -> 5f
+                            else -> 1f
+                        }
+                        if (next == 1f) {
                             scale = 1f
                             offset = Offset.Zero
                         } else {
-                            scale = 2.5f
-                            offset = clamp((Offset(size.width / 2f, size.height / 2f) - point) * 1.5f, 2.5f)
+                            // El punto tocado se queda bajo el dedo al ampliar.
+                            val touched = point - Offset(size.width / 2f, size.height / 2f)
+                            offset = clamp(touched - (touched - offset) * (next / scale), next)
+                            scale = next
                         }
                     },
                 )
@@ -788,21 +1458,6 @@ private fun ZoomablePhoto(item: MediaItem, active: Boolean, onTap: () -> Unit) {
     }
 }
 
-@Composable
-private fun PlayerChip(label: String, on: Boolean, accent: Color, onClick: () -> Unit) {
-    Text(
-        label,
-        style = SmallStyle,
-        color = if (on) OnTint else Color.White,
-        maxLines = 1,
-        modifier = Modifier
-            .clip(CircleShape)
-            .background(if (on) accent else Color.White.copy(alpha = 0.14f))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 11.dp, vertical = 7.dp),
-    )
-}
-
 /**
  * [player] solo llega a la página que se está viendo y cuando el visor está quieto.
  * Un toque enseña u oculta los controles; dos toques en un lado saltan diez segundos.
@@ -818,8 +1473,11 @@ private fun VideoPage(
     onToggle: () -> Unit,
     onSeekBy: (Long) -> Unit,
     onAdjust: (left: Boolean, amount: Float) -> Unit,
+    fast: Boolean,
+    onHold: (Boolean) -> Unit,
 ) {
     val tap by rememberUpdatedState(onTap)
+    val hold by rememberUpdatedState(onHold)
     val seek by rememberUpdatedState(onSeekBy)
     val tune by rememberUpdatedState(onAdjust)
     Box(
@@ -830,6 +1488,24 @@ private fun VideoPage(
                     onTap = { tap() },
                     onDoubleTap = { point -> seek(if (point.x < size.width / 2) -10_000L else 10_000L) },
                 )
+            }
+            .pointerInput(Unit) {
+                // Mantener el dedo quieto: el doble de rápido hasta soltarlo. El toque de soltar se
+                // lo queda este gesto, para que no enseñe ni esconda los controles.
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val press = awaitLongPressOrCancellation(down.id) ?: return@awaitEachGesture
+                    hold(true)
+                    try {
+                        while (true) {
+                            val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == press.id } ?: break
+                            change.consume()
+                            if (!change.pressed) break
+                        }
+                    } finally {
+                        hold(false)
+                    }
+                }
             }
             .pointerInput(Unit) {
                 awaitEachGesture {
@@ -864,6 +1540,15 @@ private fun VideoPage(
                 modifier = Modifier.fillMaxSize(),
             )
         }
+        if (fast) {
+            Text(
+                "⏩ 2×",
+                style = HeadingStyle,
+                color = Color.White,
+                modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp).clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.6f)).padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
         if (flash != null) {
             Text(
                 flash,
@@ -887,10 +1572,17 @@ private fun MoreSheet(
     item: MediaItem,
     place: String?,
     things: List<String>,
-    onRename: (String) -> Unit,
+    onInfo: () -> Unit,
+    motion: Boolean,
+    onMotion: () -> Unit,
+    landscape: Boolean,
+    onRename: () -> Unit,
     onDismiss: () -> Unit,
     onShareClean: () -> Unit,
+    onSetAs: () -> Unit,
     onUseAs: () -> Unit,
+    onRotate: () -> Unit,
+    onScreen: () -> Unit,
     onMove: () -> Unit,
     onCopy: () -> Unit,
     onHide: () -> Unit,
@@ -899,71 +1591,286 @@ private fun MoreSheet(
     onMarkup: () -> Unit,
     onText: () -> Unit,
     onCutout: () -> Unit,
+    onPortrait: () -> Unit,
     onShrink: () -> Unit,
+    onScan: () -> Unit,
+    onCopyImage: () -> Unit,
 ) {
-    val context = LocalContext.current
-    // Lo que anotó la cámara se lee al abrir los detalles, no antes.
-    val camera by produceState(emptyList<Pair<String, String>>(), item.id) {
-        value = withContext(Dispatchers.IO) { cameraInfo(context, item) }
-    }
-    var renaming by remember { mutableStateOf(false) }
-    var newName by remember { mutableStateOf(item.name.substringBeforeLast('.')) }
-
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Lumi.Surface) {
-        Column(
-            Modifier.verticalScroll(rememberScrollState()).padding(start = 24.dp, end = 24.dp, bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Text("Detalles", style = HeadingStyle.copy(fontSize = 20.sp))
-            DetailRow("Fecha", "${dayTitle(item.date)}, ${timeText(item.date)}")
-            DetailRow("Archivo", item.name)
-            DetailRow("Tamaño", formatSize(item.size))
-            if (item.width > 0 && item.height > 0) {
-                val megapixels = String.format(Locale("es", "ES"), "%.1f MP", item.width * item.height / 1_000_000.0)
-                DetailRow("Resolución", "${item.width} × ${item.height}" + if (item.isVideo) "" else " · $megapixels")
-            }
-            if (item.isVideo) DetailRow("Duración", formatDuration(item.duration))
-            if (item.path.isNotEmpty()) DetailRow("Carpeta", item.path.trimEnd('/'))
-            if (!item.isExternal) DetailRow("Guardada en", if (item.onCard) "Tarjeta de memoria" else "Memoria del teléfono")
-            if (place != null) DetailRow("Lugar", "Cerca de $place")
-            camera.forEach { (label, value) -> DetailRow(label, value) }
-            if (things.isNotEmpty()) DetailRow("Lumi ve", things.joinToString(", "))
-            Column(Modifier.padding(top = 6.dp)) {
-                SheetAction("Presentación", "Pasa las fotos solas cada tres segundos; un toque la detiene", onSlideshow)
-                if (!item.isVideo) SheetAction("Dibujar o escribir encima", "Se guarda en una copia", onMarkup)
-                if (!item.isVideo) SheetAction("Copiar el texto de la foto", "Lee lo que hay escrito para pegarlo donde quieras", onText)
-                if (!item.isVideo) SheetAction("Quitar el fondo", "Deja solo a la persona u objeto principal", onCutout)
-                if (item.isVideo && !item.isExternal) SheetAction("Reducir el peso", "Guarda una copia que ocupa menos; el original no se toca", onShrink)
-                SheetAction("Usar como portada del álbum", null, onCover)
-                SheetAction("Cambiar el nombre", null) { renaming = true }
-                if (!item.isVideo) {
-                    SheetAction("Enviar sin ubicación", "Se manda una copia sin el lugar donde se hizo", onShareClean)
-                    SheetAction("Usar como…", "Fondo de pantalla, foto de contacto y otros", onUseAs)
-                }
-                SheetAction("Mover a un álbum", null, onMove)
-                SheetAction("Copiar a un álbum", null, onCopy)
-                SheetAction("Mover a la carpeta privada", "Se guarda cifrada y desaparece de la galería", onHide)
-            }
+    // Lo más usado, en botones redondos; según sea foto o vídeo.
+    val quick: List<Triple<ImageVector, String, () -> Unit>> = if (item.isVideo) listOf(
+        Triple(InfoIcon, "Información", onInfo),
+        Triple(ShrinkIcon, "Reducir", onShrink),
+        Triple(LandscapeIcon, if (landscape) "Vertical" else "Horizontal", onScreen),
+        Triple(CopyIcon, "Copiar", onCopyImage),
+        Triple(AlbumIcon, "Álbum", onMove),
+        Triple(Icons.Filled.Lock, "Ocultar", onHide),
+        Triple(SlidesIcon, "Presentación", onSlideshow),
+        Triple(PenIcon, "Nombre", onRename),
+    ) else listOf(
+        Triple(PictureIcon, "Fondo", onSetAs),
+        Triple(RotateIcon, "Girar", onRotate),
+        Triple(TextIcon, "Texto", onText),
+        Triple(PersonIcon, "Sin fondo", onCutout),
+        Triple(CopyIcon, "Copiar", onCopyImage),
+        Triple(AlbumIcon, "Álbum", onMove),
+        Triple(Icons.Filled.Lock, "Ocultar", onHide),
+        Triple(PenIcon, "Dibujar", onMarkup),
+    )
+    // El resto, en una lista corta con iconos.
+    val rows: List<Triple<ImageVector, String, () -> Unit>> = buildList {
+        if (motion) add(Triple(SlidesIcon, "Foto en movimiento: guardar el vídeo o un instante", onMotion))
+        if (!item.isVideo) {
+            add(Triple(PersonIcon, "Modo retrato: desenfocar el fondo", onPortrait))
+            add(Triple(InfoIcon, "Información", onInfo))
+            add(Triple(PenIcon, "Cambiar el nombre", onRename))
+            add(Triple(LandscapeIcon, if (landscape) "Volver a vertical" else "Ver en horizontal", onScreen))
+            add(Triple(ScanIcon, "Escanear documento", onScan))
+            add(Triple(SlidesIcon, "Presentación", onSlideshow))
+        }
+        add(Triple(AlbumIcon, "Copiar a un álbum", onCopy))
+        add(Triple(CoverIcon, "Usar como portada del álbum", onCover))
+        if (!item.isVideo) {
+            add(Triple(NoPlaceIcon, "Enviar sin ubicación", onShareClean))
+            add(Triple(OpenWithIcon, "Usar en otra app", onUseAs))
         }
     }
 
-    if (renaming) {
-        AlertDialog(
-            onDismissRequest = { renaming = false },
-            containerColor = Lumi.Surface,
-            title = { Text("Cambiar el nombre", style = HeadingStyle) },
-            text = { OutlinedTextField(newName, { newName = it.take(80) }, singleLine = true, shape = RoundedCornerShape(16.dp)) },
-            confirmButton = {
-                Text(
-                    "Guardar", style = LabelStyle, color = Lumi.Accent,
-                    modifier = Modifier.clip(CircleShape).clickable(enabled = newName.isNotBlank()) { renaming = false; onRename(newName) }.padding(12.dp),
-                )
-            },
-            dismissButton = {
-                Text("Cancelar", style = LabelStyle, color = Lumi.Muted, modifier = Modifier.clip(CircleShape).clickable { renaming = false }.padding(12.dp))
-            },
-        )
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = Lumi.Surface) {
+        Column(
+            Modifier.verticalScroll(rememberScrollState()).padding(start = 18.dp, end = 18.dp, bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            // Qué archivo es: miniatura, nombre y peso.
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                MediaThumb(item, 160, Modifier.size(52.dp).clip(RoundedCornerShape(14.dp)))
+                Column(Modifier.weight(1f)) {
+                    Text(item.name, style = HeadingStyle.copy(fontSize = 15.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        formatSize(item.size) + if (item.width > 0) " · ${item.width} × ${item.height}" else "",
+                        style = SmallStyle,
+                    )
+                }
+            }
+            quick.chunked(4).forEach { line ->
+                Row(Modifier.fillMaxWidth()) {
+                    line.forEach { (icon, label, act) -> QuickButton(icon, label, Modifier.weight(1f), act) }
+                    repeat(4 - line.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Lumi.Bg)) {
+                rows.forEachIndexed { i, (icon, title, act) ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable(onClick = act).padding(horizontal = 16.dp, vertical = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        Icon(icon, null, Modifier.size(20.dp), tint = Lumi.Accent)
+                        Text(title, style = LabelStyle.copy(fontSize = 15.sp), modifier = Modifier.weight(1f))
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, Modifier.size(18.dp), tint = Lumi.Muted)
+                    }
+                    if (i < rows.lastIndex) HorizontalDivider(Modifier.padding(start = 50.dp), color = Lumi.Surface, thickness = 1.dp)
+                }
+            }
+        }
     }
+}
+
+/** Botón redondo del menú «Más»: icono en un círculo con su nombre debajo. */
+@Composable
+private fun QuickButton(icon: ImageVector, label: String, modifier: Modifier, onClick: () -> Unit) {
+    Column(
+        modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Box(Modifier.size(52.dp).clip(CircleShape).background(Lumi.Accent.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
+            Icon(icon, null, Modifier.size(22.dp), tint = Lumi.Accent)
+        }
+        Text(label, style = SmallStyle.copy(fontSize = 12.sp), color = Lumi.Ink, maxLines = 1)
+    }
+}
+
+/**
+ * Los datos de la foto o el vídeo, en un panel bajo la imagen, que sube para dejarle sitio. El
+ * lugar, la cámara y lo que Lumi reconoce van como etiquetas; el lugar y las cosas buscan fotos
+ * parecidas. Una tira enseña las demás fotos de ese día. Se cierra deslizando hacia abajo,
+ * tocando la foto o con «atrás».
+ */
+@Composable
+private fun InfoPanel(
+    related: List<Pair<String, List<MediaItem>>>,
+    onRelated: (List<MediaItem>, MediaItem) -> Unit,
+    item: MediaItem,
+    place: String?,
+    things: List<String>,
+    sameDay: List<MediaItem>,
+    onJump: (MediaItem) -> Unit,
+    onPlace: (String) -> Unit,
+    onThing: (String) -> Unit,
+    onClose: () -> Unit,
+) {
+    val context = LocalContext.current
+    // Lo que anotó la cámara se lee al abrir el panel, no antes.
+    val camera by produceState(emptyList<Pair<String, String>>(), item.id) {
+        value = withContext(Dispatchers.IO) { cameraInfo(context, item) }
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .fillMaxHeight(0.5f)
+            .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
+            .background(Lumi.Surface)
+            .verticalScroll(rememberScrollState())
+            .navigationBarsPadding()
+            .padding(start = 20.dp, end = 12.dp, top = 8.dp, bottom = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(Modifier.align(Alignment.CenterHorizontally).size(width = 36.dp, height = 4.dp).clip(CircleShape).background(Lumi.Line))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(dayTitle(item.date), style = HeadingStyle.copy(fontSize = 20.sp))
+                Text(
+                    timeText(item.date) + " · " + item.name + " · " + formatSize(item.size),
+                    style = SmallStyle, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+            }
+            BarIcon(Icons.Filled.Close, "Cerrar", onClose)
+        }
+        // Lugar y cámara, como etiquetas.
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (place != null) InfoChip(place, Icons.Filled.Place) { onPlace(place) }
+            camera.forEach { (label, value) -> InfoChip(if (label == "Flash") "Flash" else value) }
+            if (item.width > 0 && !item.isVideo) {
+                InfoChip(String.format(Locale.US, "%.1f MP", item.width * item.height / 1_000_000.0))
+            }
+            if (item.isVideo) InfoChip(formatDuration(item.duration))
+        }
+        if (sameDay.size > 1) {
+            Text(countText(sameDay.size, "foto ese día", "fotos ese día"), style = LabelStyle)
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                items(sameDay, key = { it.id }) { other ->
+                    val here = other.id == item.id
+                    MediaThumb(
+                        other, 160,
+                        Modifier.size(58.dp).clip(RoundedCornerShape(10.dp))
+                            .then(if (here) Modifier.border(2.dp, Lumi.Accent, RoundedCornerShape(10.dp)) else Modifier)
+                            .clickable { onJump(other) },
+                    )
+                }
+            }
+        }
+        if (things.isNotEmpty()) {
+            Text("Lumi ve", style = LabelStyle)
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                things.forEach { thing -> InfoChip(thing.replaceFirstChar { it.uppercase() }, Icons.Filled.Search) { onThing(thing) } }
+            }
+        }
+        if (related.isNotEmpty()) {
+            var chosen by remember(item.id) { mutableStateOf(0) }
+            Text("Más como esta", style = LabelStyle)
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                related.forEachIndexed { i, (label, list) ->
+                    val on = i == chosen.coerceAtMost(related.lastIndex)
+                    Text(
+                        "$label · ${list.size}", style = LabelStyle, color = if (on) Lumi.OnAccent else Lumi.Ink,
+                        modifier = Modifier.clip(CircleShape).background(if (on) Lumi.Accent else Lumi.Bg).clickable { chosen = i }
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                    )
+                }
+            }
+            val list = related[chosen.coerceAtMost(related.lastIndex)].second
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                items(list.take(40), key = { it.id }) { other ->
+                    MediaThumb(other, 160, Modifier.size(72.dp).clip(RoundedCornerShape(12.dp)).clickable { onRelated(list, other) })
+                }
+            }
+        }
+        if (item.path.isNotEmpty()) DetailRow("Carpeta", item.path.trimEnd('/'))
+        if (!item.isExternal) DetailRow("Guardada en", if (item.onCard) "Tarjeta de memoria" else "Memoria del teléfono")
+    }
+}
+
+/**
+ * Hilos que salen de [item]: las mismas cosas, las mismas personas, el mismo sitio y el mismo día
+ * de otros años. Cada uno con sus fotos, de la más reciente a la más antigua y sin la propia.
+ */
+private fun relatedTo(item: MediaItem, state: UiState): List<Pair<String, List<MediaItem>>> {
+    if (item.isExternal) return emptyList()
+    val out = ArrayList<Pair<String, List<MediaItem>>>()
+    val others = state.items.filter { it.id != item.id && !it.isScreenshot }
+    state.people.filter { it.name != null && item.id in it.photos }.forEach { person ->
+        val ids = person.photos.toHashSet()
+        others.filter { it.id in ids }.takeIf { it.isNotEmpty() }?.let { out += person.name!! to it }
+    }
+    com.lumi.galeria.data.thingWords(state.index[item.id]).take(3).forEach { word ->
+        others.filter { word in com.lumi.galeria.data.thingWords(state.index[it.id]) }.takeIf { it.size >= 2 }?.let {
+            out += word.replaceFirstChar(Char::uppercase) to it
+        }
+    }
+    state.places[item.id]?.let { place ->
+        others.filter { state.places[it.id] == place }.takeIf { it.isNotEmpty() }?.let { out += place to it }
+    }
+    val zone = java.time.ZoneId.systemDefault()
+    val day = java.time.Instant.ofEpochMilli(item.date).atZone(zone).toLocalDate()
+    others.filter {
+        val d = java.time.Instant.ofEpochMilli(it.date).atZone(zone).toLocalDate()
+        d.year != day.year && d.monthValue == day.monthValue && kotlin.math.abs(d.dayOfMonth - day.dayOfMonth) <= 1
+    }.takeIf { it.isNotEmpty() }?.let { out += "Este día, otros años" to it }
+    return out
+}
+
+/** Etiqueta del panel de información. Con [onClick], lleva a buscar. */
+@Composable
+private fun InfoChip(label: String, icon: ImageVector? = null, onClick: (() -> Unit)? = null) {
+    Row(
+        Modifier.clip(CircleShape).background(Lumi.Bg).then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(start = if (icon != null) 10.dp else 14.dp, end = 14.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        if (icon != null) Icon(icon, null, Modifier.size(15.dp), tint = Lumi.Accent)
+        Text(label, style = LabelStyle, maxLines = 1)
+    }
+}
+
+@Composable
+private fun MenuGroup(title: String) {
+    Text(title, style = SmallStyle.copy(fontSize = 13.sp), color = Lumi.Accent, modifier = Modifier.padding(top = 14.dp, bottom = 2.dp))
+}
+
+@Composable
+private fun MenuItem(title: String, hint: String?, onClick: () -> Unit) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(vertical = 9.dp)) {
+        Text(title, style = LabelStyle.copy(fontSize = 15.sp))
+        if (hint != null) Text(hint, style = SmallStyle)
+    }
+}
+
+/** Cambiar el nombre del archivo, sin la extensión, que no se toca. */
+@Composable
+private fun RenameDialog(item: MediaItem, onDone: (String) -> Unit, onDismiss: () -> Unit) {
+    var name by remember(item.id) { mutableStateOf(item.name.substringBeforeLast('.')) }
+    val clean = name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "")
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Lumi.Surface,
+        title = { Text("Cambiar el nombre", style = HeadingStyle) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(name, { name = it.take(80) }, singleLine = true, shape = RoundedCornerShape(16.dp))
+                Text("." + item.name.substringAfterLast('.', ""), style = SmallStyle)
+            }
+        },
+        confirmButton = {
+            Text(
+                "Guardar", style = LabelStyle, color = if (clean.isEmpty()) Lumi.Muted else Lumi.Accent,
+                modifier = Modifier.clip(CircleShape).clickable(enabled = clean.isNotEmpty()) { onDone(clean) }.padding(12.dp),
+            )
+        },
+        dismissButton = {
+            Text("Cancelar", style = LabelStyle, color = Lumi.Muted, modifier = Modifier.clip(CircleShape).clickable(onClick = onDismiss).padding(12.dp))
+        },
+    )
 }
 
 @Composable
@@ -1034,7 +1941,7 @@ fun StackScreen(screen: Screen.StackView, state: UiState, vm: LumiViewModel, act
             }
         }
         Text(
-            if (isBest) "Elegida por nitidez. Toca otra si prefieres quedarte con ella."
+            if (isBest) "Elegida por nitidez y, si sale gente, con todos los ojos abiertos. Toca otra si prefieres quedarte con ella."
             else "Has elegido otra toma. Las demás irán a la papelera, donde siguen 30 días.",
             style = SmallStyle,
             modifier = Modifier.padding(horizontal = 18.dp),
@@ -1046,12 +1953,20 @@ fun StackScreen(screen: Screen.StackView, state: UiState, vm: LumiViewModel, act
                 onClick = { actions.trash(stack.members.filter { it.id != selected.id }) {} },
                 modifier = Modifier.fillMaxWidth(),
             )
-            PillButton(
-                "Conservar las ${stack.members.size}",
-                onClick = { vm.keepStack(stack); vm.back() },
-                modifier = Modifier.fillMaxWidth(),
-                primary = false,
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PillButton(
+                    "Conservar las ${stack.members.size}",
+                    onClick = { vm.keepStack(stack); vm.back() },
+                    modifier = Modifier.weight(1f),
+                    primary = false,
+                )
+                PillButton(
+                    "Animar",
+                    onClick = { vm.open(Screen.Animate(stack.members.filter { !it.isVideo }.map { it.id })) },
+                    modifier = Modifier.weight(1f),
+                    primary = false,
+                )
+            }
         }
     }
 }

@@ -27,6 +27,7 @@ private val FROM_ENGLISH = mapOf(
     "photo" to "foto", "photos" to "foto", "picture" to "foto", "pictures" to "foto",
     "favorite" to "favorita", "favorites" to "favorita", "favourite" to "favorita", "favourites" to "favorita",
     "screenshot" to "captura", "screenshots" to "captura",
+    "selfies" to "selfie", "portrait" to "vertical", "landscape" to "horizontal",
 )
 private val MONTHS = listOf(
     "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
@@ -114,7 +115,9 @@ fun topPlaces(items: List<MediaItem>, names: Map<Long, String>, limit: Int = 8):
 private fun isFilterWord(token: String): Boolean =
     token in MONTHS || (token.length == 4 && token.all(Char::isDigit) && token.toInt() in 1990..2100) ||
         token == "hoy" || token == "ayer" || token == "texto" ||
-        sameWord(token, "video") || sameWord(token, "foto") || sameWord(token, "favorita") || sameWord(token, "captura")
+        sameWord(token, "video") || sameWord(token, "foto") || sameWord(token, "favorita") || sameWord(token, "captura") ||
+        sameWord(token, "selfie") || token == "flash" || sameWord(token, "vertical") || sameWord(token, "horizontal") ||
+        token == "verticales" || token == "horizontales"
 
 /**
  * Busca por lo que se ve en la foto, por el texto que contiene, por lugar ("madrid"), por fecha
@@ -126,6 +129,7 @@ fun search(
     items: List<MediaItem>,
     index: Map<Long, IndexEntry>,
     favorites: Set<Long>,
+    people: Map<Long, List<String>> = emptyMap(),
 ): List<MediaItem> {
     var plain = " " + normalize(query).replace(NOT_WORD, " ").trim() + " "
     if (plain.isBlank()) return emptyList()
@@ -162,6 +166,10 @@ fun search(
             albumNames.getOrPut(item.bucketId) { normalize(albumName(item.bucket) + " " + item.path) }.let { where ->
                 where.contains(token) || (token.length >= 5 && token.endsWith("s") && where.contains(token.dropLast(1)))
             } ||
+            // Quien sale en la foto, por su nombre.
+            people[item.id]?.any { normalize(it).split(' ').any { part -> part == token || (token.length >= 4 && part.startsWith(token)) } } == true ||
+            // El móvil o la cámara: «pixel», «canon», «iphone».
+            (token.length >= 3 && entry?.camera?.let { normalize(it).contains(token) } == true) ||
             (token.length >= 3 && item.name.lowercase(Locale.ROOT).let { name ->
                 name.contains(token) || (token.length >= 5 && token.endsWith("s") && name.contains(token.dropLast(1)))
             })
@@ -184,6 +192,10 @@ fun search(
                 sameWord(token, "foto") -> !item.isVideo
                 sameWord(token, "favorita") -> item.id in favorites
                 sameWord(token, "captura") -> item.isScreenshot
+                sameWord(token, "selfie") -> entry?.front == true
+                token == "flash" -> entry?.flash == true
+                sameWord(token, "vertical") || token == "verticales" -> item.shownHeight > item.shownWidth
+                sameWord(token, "horizontal") || token == "horizontales" -> item.shownWidth > item.shownHeight
                 else -> date.year == token.toInt()
             }
         }
@@ -327,7 +339,19 @@ fun buildMemory(items: List<MediaItem>): Memory? {
 /** Tipos de archivo por los que se puede acotar una búsqueda. Se pueden sumar: "vídeos" y "favoritas". */
 enum class Kind(val label: String) {
     PHOTOS("Fotos"), VIDEOS("Vídeos"), FAVORITES("Favoritas"), SCREENSHOTS("Capturas"), TEXT("Con texto"), GIFS("GIF"),
+    MOTION("En movimiento"), SELFIES("Selfies"), FLASH("Con flash"),
+    HORIZONTAL("Horizontales"), VERTICAL("Verticales"), HIGH_RES("Alta resolución"),
 }
+
+/** Tramos de peso del archivo. */
+enum class SizeRange(val label: String, val range: LongRange) {
+    SMALL("Menos de 1 MB", 0L until MB),
+    MEDIUM("De 1 a 10 MB", MB until 10 * MB),
+    LARGE("De 10 a 100 MB", 10 * MB until 100 * MB),
+    HUGE("Más de 100 MB", 100 * MB..Long.MAX_VALUE),
+}
+
+private const val MB = 1024L * 1024
 
 /** Lo que hay elegido en el buscador además de lo escrito. Todo lo elegido tiene que cumplirse. */
 data class Filters(
@@ -338,8 +362,17 @@ data class Filters(
     val place: String? = null,
     val album: Long? = null,
     val thing: String? = null,
+    /** Móvil o cámara con que se hizo. */
+    val camera: String? = null,
+    val size: SizeRange? = null,
+    /** JPG, HEIC, PNG, DNG, MP4… */
+    val format: String? = null,
+    /** Nombre de una persona. */
+    val person: String? = null,
 ) {
-    val isEmpty: Boolean get() = kinds.isEmpty() && year == null && month == null && place == null && album == null && thing == null
+    val isEmpty: Boolean
+        get() = kinds.isEmpty() && year == null && month == null && place == null && album == null && thing == null &&
+            camera == null && size == null && format == null && person == null
 }
 
 /** Una opción de un filtro, con las fotos que quedarían al elegirla. */
@@ -357,6 +390,10 @@ class Found(
     val places: List<Option<String>> = emptyList(),
     val albums: List<Option<Long>> = emptyList(),
     val things: List<Option<String>> = emptyList(),
+    val cameras: List<Option<String>> = emptyList(),
+    val sizes: List<Option<SizeRange>> = emptyList(),
+    val formats: List<Option<String>> = emptyList(),
+    val people: List<Option<String>> = emptyList(),
 )
 
 /** Las cosas que se ven en una foto, con la palabra que se enseña al usuario. */
@@ -389,7 +426,16 @@ private fun hasKind(kind: Kind, item: MediaItem, entry: IndexEntry?, favorites: 
     Kind.SCREENSHOTS -> item.isScreenshot
     Kind.TEXT -> (entry?.text?.length ?: 0) >= 40
     Kind.GIFS -> item.isGif
+    Kind.MOTION -> entry?.motion == true
+    Kind.SELFIES -> entry?.front == true
+    Kind.FLASH -> entry?.flash == true
+    Kind.HORIZONTAL -> item.shownWidth > item.shownHeight
+    Kind.VERTICAL -> item.shownHeight > item.shownWidth
+    // Fotos de 12 megapíxeles o más; vídeos 4K.
+    Kind.HIGH_RES -> if (item.isVideo) maxOf(item.width, item.height) >= 3840 else item.width.toLong() * item.height >= 12_000_000L
 }
+
+private fun sizeOf(item: MediaItem): SizeRange? = SizeRange.entries.firstOrNull { item.size in it.range }
 
 /**
  * Busca [query] (si hay algo escrito) y aplica [filters]. Para cada filtro cuenta sus opciones
@@ -403,8 +449,10 @@ fun find(
     index: Map<Long, IndexEntry>,
     favorites: Set<Long>,
     places: Map<Long, String>,
+    /** Foto -> nombres de las personas que salen en ella. */
+    people: Map<Long, List<String>> = emptyMap(),
 ): Found {
-    val base = if (query.isBlank()) items else search(query, items, index, favorites)
+    val base = if (query.isBlank()) items else search(query, items, index, favorites, people)
     // Sin nada escrito ni elegido no hay resultados que enseñar, pero sí opciones que ofrecer.
     val idle = query.isBlank() && filters.isEmpty
 
@@ -417,6 +465,10 @@ fun find(
     val albumCount = HashMap<Long, Int>()
     val albumNames = HashMap<Long, String>()
     val thingCount = HashMap<String, Int>()
+    val cameraCount = HashMap<String, Int>()
+    val sizeCount = IntArray(SizeRange.entries.size)
+    val formatCount = HashMap<String, Int>()
+    val personCount = HashMap<String, Int>()
 
     for (item in base) {
         val entry = index[item.id]
@@ -430,8 +482,17 @@ fun find(
         val okPlace = filters.place == null || place == filters.place
         val okAlbum = filters.album == null || item.bucketId == filters.album
         val okThing = filters.thing == null || filters.thing in things
+        val camera = entry?.camera.orEmpty()
+        val size = sizeOf(item)
+        val format = item.format
+        val okCamera = filters.camera == null || camera == filters.camera
+        val okSize = filters.size == null || size == filters.size
+        val okFormat = filters.format == null || format == filters.format
+        val names = people[item.id].orEmpty()
+        val okPerson = filters.person == null || filters.person in names
         val failed = (if (okKind) 0 else 1) + (if (okYear) 0 else 1) + (if (okMonth) 0 else 1) +
-            (if (okPlace) 0 else 1) + (if (okAlbum) 0 else 1) + (if (okThing) 0 else 1)
+            (if (okPlace) 0 else 1) + (if (okAlbum) 0 else 1) + (if (okThing) 0 else 1) +
+            (if (okCamera) 0 else 1) + (if (okSize) 0 else 1) + (if (okFormat) 0 else 1) + (if (okPerson) 0 else 1)
         if (failed > 1) continue
         if (failed == 0) results += item
 
@@ -445,6 +506,10 @@ fun find(
             albumNames.getOrPut(item.bucketId) { albumName(item.bucket) }
         }
         if (failed == 0 || !okThing) things.forEach { thingCount.merge(it, 1, Int::plus) }
+        if ((failed == 0 || !okCamera) && camera.isNotEmpty()) cameraCount.merge(camera, 1, Int::plus)
+        if ((failed == 0 || !okSize) && size != null) sizeCount[size.ordinal]++
+        if ((failed == 0 || !okFormat) && format.isNotEmpty()) formatCount.merge(format, 1, Int::plus)
+        if (failed == 0 || !okPerson) names.forEach { personCount.merge(it, 1, Int::plus) }
     }
 
     return Found(
@@ -455,5 +520,9 @@ fun find(
         places = placeCount.entries.sortedByDescending { it.value }.take(40).map { Option(it.key, it.key, it.value) },
         albums = albumCount.entries.sortedByDescending { it.value }.map { Option(it.key, albumNames[it.key].orEmpty(), it.value) },
         things = thingCount.entries.sortedByDescending { it.value }.take(40).map { Option(it.key, it.key.replaceFirstChar(Char::uppercase), it.value) },
+        cameras = cameraCount.entries.sortedByDescending { it.value }.take(30).map { Option(it.key, it.key, it.value) },
+        sizes = SizeRange.entries.filter { sizeCount[it.ordinal] > 0 }.map { Option(it, it.label, sizeCount[it.ordinal]) },
+        formats = formatCount.entries.sortedByDescending { it.value }.map { Option(it.key, it.key, it.value) },
+        people = personCount.entries.sortedByDescending { it.value }.map { Option(it.key, it.key, it.value) },
     )
 }

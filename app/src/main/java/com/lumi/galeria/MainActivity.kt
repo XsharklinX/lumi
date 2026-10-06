@@ -20,6 +20,13 @@ import androidx.compose.foundation.layout.Row
 import android.view.MotionEvent
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -36,6 +43,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -85,7 +93,6 @@ import com.lumi.galeria.ui.HiddenFoldersScreen
 import com.lumi.galeria.ui.CompareScreen
 import com.lumi.galeria.ui.CutoutScreen
 import com.lumi.galeria.ui.MarkupScreen
-import com.lumi.galeria.ui.TrimScreen
 import com.lumi.galeria.ui.NewAlbumScreen
 import com.lumi.galeria.ui.PillButton
 import com.lumi.galeria.ui.PinOverlay
@@ -109,6 +116,7 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge(SystemBarStyle.dark(Color.TRANSPARENT), SystemBarStyle.dark(Color.TRANSPARENT))
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) handle(intent)
+        publishShortcuts()
         setContent {
             val state by vm.state.collectAsStateWithLifecycle()
             Lang.apply(state.language)
@@ -194,6 +202,28 @@ class MainActivity : FragmentActivity() {
         )
     }
 
+    /**
+     * Atajos al mantener pulsado el icono de Lumi en el inicio del teléfono. Se publican cada vez
+     * que se abre la app, así siguen el idioma elegido.
+     */
+    private fun publishShortcuts() {
+        val manager = getSystemService(android.content.pm.ShortcutManager::class.java) ?: return
+        Lang.apply(vm.state.value.language)
+        fun shortcut(id: String, label: String, icon: Int) = android.content.pm.ShortcutInfo.Builder(this, id)
+            .setShortLabel(tr(label))
+            .setIcon(android.graphics.drawable.Icon.createWithResource(this, icon))
+            .setIntent(Intent(this, MainActivity::class.java).setAction("$SHORTCUT$id"))
+            .build()
+        runCatching {
+            manager.dynamicShortcuts = listOf(
+                shortcut("buscar", "Buscar", R.drawable.ic_shortcut_search),
+                shortcut("camara", "Hacer una foto", R.drawable.ic_shortcut_camera),
+                shortcut("privada", "Carpeta privada", R.drawable.ic_shortcut_lock),
+                shortcut("espacio", "Liberar espacio", R.drawable.ic_shortcut_space),
+            )
+        }
+    }
+
     /** Otra app puede pedir que se abra un archivo o que el usuario elija uno. */
     private fun handle(intent: Intent) {
         when (intent.action) {
@@ -210,6 +240,30 @@ class MainActivity : FragmentActivity() {
                         videos = !type.startsWith("image"),
                     ),
                 )
+            }
+            "${SHORTCUT}buscar" -> {
+                vm.setPick(null)
+                vm.switchTab(Screen.Timeline)
+                vm.openSearch()
+            }
+            "${SHORTCUT}camara" -> {
+                vm.setPick(null)
+                runCatching { startActivity(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)) }
+            }
+            "${SHORTCUT}privada" -> {
+                vm.setPick(null)
+                vm.switchTab(Screen.Albums)
+                vm.openVault { onOk -> authenticate(onOk = onOk) }
+            }
+            "${SHORTCUT}espacio" -> {
+                vm.setPick(null)
+                vm.switchTab(Screen.Timeline)
+                vm.open(Screen.Space)
+            }
+            MemoryWidget.ACTION_MEMORY -> {
+                vm.setPick(null)
+                vm.switchTab(Screen.Timeline)
+                vm.open(Screen.Items(intent.getStringExtra(MemoryWidget.EXTRA_TITLE) ?: tr("Recuerdos"), Source.Auto("recuerdo")))
             }
             else -> vm.setPick(null)
         }
@@ -291,6 +345,7 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
             deleteForever = { items -> ask(items, {}) { deleteRequest(context, it) } },
             write = { items, onGranted -> ask(items, onGranted) { writeRequest(context, it) } },
             share = { items -> share(context, items.map { it.uri }, items.all { it.isVideo }, items.none { it.isVideo }) },
+            shareUris = { uris -> share(context, uris, false, true) },
             shareWithoutLocation = { item ->
                 val clean = copyWithoutLocation(context, item)
                 if (clean != null) share(context, listOf(clean), false, true) else vm.say("No se pudo preparar la copia")
@@ -360,32 +415,79 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
         if (!vm.back()) vm.switchTab(Screen.Timeline)
     }
 
-    Box(Modifier.fillMaxSize().background(Lumi.Bg)) {
-        if (state.hasPermission) {
-            when (base) {
-                Screen.Timeline -> TimelineScreen(state, vm, actions, timelineGrid, link)
-                Screen.Albums -> AlbumsScreen(state, vm, actions)
-                Screen.Search -> SearchScreen(state, vm, link)
-                Screen.Space -> SpaceScreen(state, vm)
-                Screen.Favorites -> FavoritesScreen(state, vm, actions, link)
-                Screen.Trash -> TrashScreen(state, vm, actions)
-                Screen.Vault -> VaultScreen(state, vm)
-                Screen.Backup -> BackupScreen(state, vm)
-                Screen.Settings -> SettingsScreen(state, vm, actions)
-                is Screen.Album -> AlbumScreen(base, state, vm, actions, link)
-                is Screen.NewAlbum -> NewAlbumScreen(base, state, vm, actions)
-                is Screen.Items -> AnyItemsScreen(base, state, vm, actions, link)
-                is Screen.StackView -> StackScreen(base, state, vm, actions)
-                is Screen.Review -> ReviewScreen(base, state, vm, actions)
-                is Screen.Editor -> EditorScreen(base, state, vm, actions)
-                is Screen.Markup -> MarkupScreen(base, state, vm)
-                is Screen.Trim -> TrimScreen(base, state, vm)
-                is Screen.Collage -> CollageScreen(base, state, vm)
-                is Screen.Pdf -> com.lumi.galeria.ui.PdfScreen(base, state, vm)
-                is Screen.Compare -> CompareScreen(base, state, vm, actions)
-                is Screen.Cutout -> CutoutScreen(base, state, vm)
-                Screen.HiddenFolders -> HiddenFoldersScreen(state, vm, actions)
-                is Screen.Viewer -> Unit
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize().background(Lumi.Bg)) {
+        // Tableta o plegable abierto: panel fijo a la izquierda y más columnas en las cuadrículas.
+        val wide = maxWidth >= com.lumi.galeria.ui.WIDE_FROM && maxHeight >= 480.dp
+        val pane = wide && !com.lumi.galeria.ui.isImmersive(base)
+        val room = if (pane) maxWidth - com.lumi.galeria.ui.SIDE_PANE else maxWidth
+        androidx.compose.runtime.CompositionLocalProvider(
+            com.lumi.galeria.ui.LocalWide provides pane,
+            com.lumi.galeria.ui.LocalColumnScale provides (room / 400.dp).toInt().coerceIn(1, 3),
+        ) {
+            androidx.compose.foundation.layout.Row(Modifier.fillMaxSize()) {
+                if (pane) com.lumi.galeria.ui.SidePane(state, vm, actions, base)
+                Box(Modifier.weight(1f).fillMaxHeight()) {
+                    if (state.hasPermission) {
+                        // Al entrar en una pantalla llega desde la derecha; al volver, se va por la derecha. Entre
+                        // Fotos y Álbumes se desliza hacia el lado de la pestaña.
+                        val depth = vm.backStack.count { it !is Screen.Viewer }
+                        AnimatedContent(
+                            targetState = Shown(base, depth),
+                            contentKey = { it.screen },
+                            transitionSpec = {
+                                val forward = when {
+                                    targetState.depth != initialState.depth -> targetState.depth > initialState.depth
+                                    else -> targetState.screen == Screen.Albums
+                                }
+                                val sign = if (forward) 1 else -1
+                                (slideInHorizontally(tween(260)) { sign * it / 4 } + fadeIn(tween(260)))
+                                    .togetherWith(slideOutHorizontally(tween(260)) { -sign * it / 6 } + fadeOut(tween(180)))
+                            },
+                            label = "pantallas",
+                        ) { (shown, _) ->
+                                when (shown) {
+                                    Screen.Timeline -> TimelineScreen(state, vm, actions, timelineGrid, link)
+                                    Screen.Albums -> AlbumsScreen(state, vm, actions)
+                                    Screen.Search -> SearchScreen(state, vm, link)
+                                    Screen.Space -> SpaceScreen(state, vm, actions)
+                                    Screen.Favorites -> FavoritesScreen(state, vm, actions, link)
+                                    Screen.Trash -> TrashScreen(state, vm, actions)
+                                    Screen.Vault -> VaultScreen(state, vm)
+                                    Screen.Backup -> BackupScreen(state, vm)
+                                    Screen.Settings -> SettingsScreen(state, vm, actions)
+                                    is Screen.Album -> AlbumScreen(shown, state, vm, actions, link)
+                                    is Screen.NewAlbum -> NewAlbumScreen(shown, state, vm, actions)
+                                    is Screen.Items -> AnyItemsScreen(shown, state, vm, actions, link)
+                                    is Screen.StackView -> StackScreen(shown, state, vm, actions)
+                                    is Screen.Review -> ReviewScreen(shown, state, vm, actions)
+                                    is Screen.Editor -> EditorScreen(shown, state, vm, actions)
+                                    is Screen.Markup -> MarkupScreen(shown, state, vm)
+                                    is Screen.Collage -> CollageScreen(shown, state, vm)
+                                    is Screen.Pdf -> com.lumi.galeria.ui.PdfScreen(shown, state, vm)
+                                    is Screen.Gif -> com.lumi.galeria.ui.GifScreen(shown, state, vm)
+                                    is Screen.Wallpaper -> com.lumi.galeria.ui.WallpaperScreen(shown, state, vm)
+                                    is Screen.Rotate -> com.lumi.galeria.ui.RotateScreen(shown, state, vm, actions)
+                                    Screen.AlbumOrder -> com.lumi.galeria.ui.AlbumOrderScreen(state, vm)
+                                    is Screen.StoryView -> com.lumi.galeria.ui.StoryScreen(shown, state, vm)
+                                    Screen.SwipeReview -> com.lumi.galeria.ui.SwipeScreen(state, vm, actions)
+                                    Screen.Import -> com.lumi.galeria.ui.ImportScreen(state, vm)
+                                    is Screen.YearReview -> com.lumi.galeria.ui.YearReviewScreen(shown, state, vm)
+                                    is Screen.VideoEditor -> com.lumi.galeria.ui.VideoEditorScreen(shown, state, vm)
+                                    Screen.People -> com.lumi.galeria.ui.PeopleScreen(state, vm)
+                                    is Screen.Animate -> com.lumi.galeria.ui.AnimateScreen(shown, state, vm)
+                                    is Screen.Export -> com.lumi.galeria.ui.ExportScreen(shown, state, vm, actions)
+                                    is Screen.MemoryVideo -> com.lumi.galeria.ui.MemoryVideoScreen(shown, state, vm)
+                                    Screen.Screenshots -> com.lumi.galeria.ui.ScreenshotsScreen(state, vm)
+                                    is Screen.Portrait -> com.lumi.galeria.ui.PortraitScreen(shown, state, vm)
+                                    is Screen.Person -> com.lumi.galeria.ui.PersonScreen(shown, state, vm, actions, link)
+                                    is Screen.Compare -> CompareScreen(shown, state, vm, actions)
+                                    is Screen.Cutout -> CutoutScreen(shown, state, vm)
+                                    Screen.HiddenFolders -> HiddenFoldersScreen(state, vm, actions)
+                                    is Screen.Viewer -> Unit
+                                }
+                        }
+                    }
+                }
             }
         }
         if (viewer != null) ViewerScreen(viewer, state, vm, actions, link)
@@ -410,6 +512,27 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
                         actions.restore(state.undo)
                         vm.clearUndo()
                     }.padding(horizontal = 14.dp, vertical = 12.dp),
+                )
+            }
+        }
+
+        vm.undoText?.takeIf { state.undo.isEmpty() && !state.pip }?.let { text ->
+            Row(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 136.dp)
+                    .clip(CircleShape)
+                    .background(Lumi.Ink)
+                    .padding(start = 18.dp, end = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(text, style = LabelStyle, color = Lumi.Bg)
+                Text(
+                    "Deshacer",
+                    style = LabelStyle,
+                    color = Lumi.Accent,
+                    modifier = Modifier.clip(CircleShape).clickable { vm.runUndo() }.padding(horizontal = 14.dp, vertical = 12.dp),
                 )
             }
         }
@@ -525,3 +648,9 @@ private fun PermissionScreen(onGrant: () -> Unit, onSettings: () -> Unit) {
         )
     }
 }
+
+/** Las acciones de los atajos del icono empiezan así. */
+private const val SHORTCUT = "com.lumi.galeria.ATAJO_"
+
+/** La pantalla que se ve y cuántas hay debajo: así se sabe si se entra o se vuelve. */
+private data class Shown(val screen: Screen, val depth: Int)
