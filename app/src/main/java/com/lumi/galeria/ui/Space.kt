@@ -26,7 +26,6 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -138,6 +137,7 @@ private fun PickGrid(
     onToggle: (Long) -> Unit,
     modifier: Modifier = Modifier,
     caption: (MediaItem) -> String? = { null },
+    urgent: (MediaItem) -> Boolean = { false },
 ) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
@@ -152,6 +152,7 @@ private fun PickGrid(
                 px = 320,
                 selected = item.id in selection,
                 caption = caption(item),
+                urgent = urgent(item),
                 modifier = Modifier.aspectRatio(1f).clickable { onToggle(item.id) },
             )
         }
@@ -205,7 +206,7 @@ fun TrashScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
             EmptyMessage("La papelera está vacía", "Lo que borres se guarda aquí 30 días por si te arrepientes.", Modifier.weight(1f))
         } else {
             Text(
-                "Cada elemento se borra solo, para siempre, cuando se cumplen sus 30 días. El número indica los días que le quedan.",
+                "Cada elemento se borra solo, para siempre, cuando se cumplen sus 30 días. En rojo, los que se van en tres días o menos.",
                 style = SmallStyle,
                 modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
             )
@@ -216,8 +217,14 @@ fun TrashScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                 modifier = Modifier.weight(1f),
                 caption = { item ->
                     val days = ((item.expires - now) / 86_400).coerceAtLeast(0)
-                    if (item.expires > 0) "$days d" else null
+                    when {
+                        item.expires <= 0 -> null
+                        days == 0L -> "Hoy"
+                        days == 1L -> "Mañana"
+                        else -> "$days días"
+                    }
                 },
+                urgent = { item -> item.expires > 0 && item.expires - now <= 3 * 86_400 },
             )
             Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PillButton(

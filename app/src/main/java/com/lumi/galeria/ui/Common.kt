@@ -38,16 +38,15 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -69,12 +68,14 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -89,6 +90,7 @@ import com.lumi.galeria.Screen
 import com.lumi.galeria.Thumb
 import com.lumi.galeria.UiState
 import com.lumi.galeria.countText
+import com.lumi.galeria.formatSize
 import com.lumi.galeria.data.Album
 import com.lumi.galeria.data.MediaItem
 import com.lumi.galeria.data.isWritableAlbumPath
@@ -147,23 +149,25 @@ fun tileBounds(grid: LazyGridState, container: LayoutCoordinates?, key: Any): Re
     return Rect(left, top, left + info.size.width, top + info.size.height)
 }
 
+/** [tone] es el color medio de la foto: se pinta en su hueco mientras llega la miniatura. */
 @Composable
-fun MediaThumb(item: MediaItem, px: Int, modifier: Modifier = Modifier) {
+fun MediaThumb(item: MediaItem, px: Int, modifier: Modifier = Modifier, tone: Int = 0) {
     AsyncImage(
         model = Thumb(item.uri, px, item.modified),
         contentDescription = null,
         contentScale = ContentScale.Crop,
-        modifier = modifier.background(Lumi.Surface),
+        // Solo vale un color opaco: 0 y COLOR_NONE significan que no se sabe.
+        modifier = modifier.background(if (tone ushr 24 == 0xFF) Color(tone) else Lumi.Surface),
     )
 }
 
 @Composable
-private fun Badge(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+private fun Badge(modifier: Modifier = Modifier, color: Color = Color.Black.copy(alpha = 0.6f), content: @Composable () -> Unit) {
     Row(
         modifier
             .padding(5.dp)
             .clip(CircleShape)
-            .background(Color.Black.copy(alpha = 0.6f))
+            .background(color)
             .padding(horizontal = 6.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) { content() }
@@ -184,9 +188,12 @@ fun PhotoTile(
     badges: Boolean = true,
     corner: Dp = 4.dp,
     caption: String? = null,
+    tone: Int = 0,
+    /** La leyenda avisa de algo que corre prisa: va en rojo. */
+    urgent: Boolean = false,
 ) {
     Box(modifier.clip(RoundedCornerShape(corner))) {
-        MediaThumb(item, px, Modifier.fillMaxSize())
+        MediaThumb(item, px, Modifier.fillMaxSize(), tone)
         if (badges) {
             if (stackSize > 1) {
                 Badge(Modifier.align(Alignment.TopEnd)) {
@@ -199,7 +206,7 @@ fun PhotoTile(
                     Text(formatDuration(item.duration), style = SmallStyle, color = Color.White)
                 }
             } else if (caption != null) {
-                Badge(Modifier.align(Alignment.BottomStart)) {
+                Badge(Modifier.align(Alignment.BottomStart), if (urgent) Color(0xFFD93025) else Color.Black.copy(alpha = 0.6f)) {
                     Text(caption, style = SmallStyle, color = Color.White)
                 }
             } else if (item.isGif) {
@@ -440,7 +447,6 @@ fun Modifier.dragSelect(
     idAt: (index: Int) -> Long?,
     selection: () -> Set<Long>,
     onChange: (Set<Long>) -> Unit,
-    onPeek: (Long?) -> Unit = {},
 ): Modifier = pointerInput(grid) {
     var start = -1
     var base = emptySet<Long>()
@@ -463,33 +469,15 @@ fun Modifier.dragSelect(
         start = first
         base = selection()
         onChange(base + id)
-        // Mientras el dedo siga quieto se enseña la foto en grande; al moverlo o soltarlo, se quita.
-        if (base.isEmpty()) onPeek(id)
-        val origin = press.position
         // Desde aquí el gesto es de la selección: se atiende antes que el desplazamiento de la
         // cuadrícula y que el toque de la foto, y se les quita para que no actúen también.
         while (true) {
             val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
             change.consume()
             if (!change.pressed) break
-            if ((change.position - origin).getDistance() > viewConfiguration.touchSlop * 2) onPeek(null)
             val index = indexAt(change.position) ?: continue
             onChange(base + (min(start, index)..max(start, index)).mapNotNull(idAt))
         }
-        onPeek(null)
-    }
-}
-
-/** La foto en grande sobre la cuadrícula, mientras se mantiene el dedo encima. */
-@Composable
-fun PeekOverlay(item: MediaItem) {
-    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.72f)).padding(18.dp), contentAlignment = Alignment.Center) {
-        AsyncImage(
-            model = Thumb(item.uri, 1024, item.modified),
-            contentDescription = null,
-            contentScale = ContentScale.Fit,
-            modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(22.dp)),
-        )
     }
 }
 
@@ -572,79 +560,100 @@ fun FastScroller(grid: LazyGridState, count: Int, label: (index: Int) -> String,
     }
 }
 
-/** Barra que sustituye a la de pestañas mientras hay fotos elegidas. */
+/** Barra que sustituye a la de pestañas mientras hay fotos elegidas: cuántas son, cuánto pesan y qué se puede hacer con ellas. */
 @Composable
 fun SelectionBar(chosen: List<MediaItem>, state: UiState, vm: LumiViewModel, actions: Actions, onClear: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     // true = mover, false = copiar, null = cerrado
     var moving by remember { mutableStateOf<Boolean?>(null) }
+    val haptic = LocalHapticFeedback.current
+    val weight = remember(chosen) { chosen.sumOf { it.size } }
 
     val targets = remember(state.albums) { state.albums.filter { isWritableAlbumPath(it.path) && !it.locked }.take(12) }
-    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    // Álbumes a un toque: se elige uno y lo marcado se mueve allí, sin abrir ningún menú.
-    if (targets.isNotEmpty()) {
-        Row(
-            Modifier.padding(horizontal = 12.dp).clip(CircleShape).background(Lumi.Surface.copy(alpha = 0.96f)).horizontalScroll(rememberScrollState()).padding(6.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("Mover a", style = SmallStyle, modifier = Modifier.padding(start = 8.dp, end = 2.dp))
-            targets.forEach { album ->
-                Row(
-                    Modifier
-                        .clip(CircleShape)
-                        .background(Lumi.Bg)
-                        .clickable {
-                            actions.write(chosen) { vm.moveTo(chosen, album.path, album.name) }
-                            onClear()
-                        }
-                        .padding(start = 4.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    MediaThumb(album.cover, 160, Modifier.size(28.dp).clip(CircleShape))
-                    Spacer(Modifier.width(6.dp))
-                    Text(album.name, style = LabelStyle, maxLines = 1)
+    Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Álbumes a un toque: se elige uno y lo marcado se mueve allí, sin abrir ningún menú.
+        if (targets.isNotEmpty()) {
+            Row(
+                Modifier.clip(CircleShape).background(Lumi.Surface.copy(alpha = 0.96f)).horizontalScroll(rememberScrollState()).padding(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Mover a", style = SmallStyle, modifier = Modifier.padding(start = 8.dp, end = 2.dp))
+                targets.forEach { album ->
+                    Row(
+                        Modifier
+                            .clip(CircleShape)
+                            .background(Lumi.Bg)
+                            .clickable {
+                                actions.write(chosen) { vm.moveTo(chosen, album.path, album.name) }
+                                onClear()
+                            }
+                            .padding(start = 4.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        MediaThumb(album.cover, 160, Modifier.size(28.dp).clip(CircleShape))
+                        Spacer(Modifier.width(6.dp))
+                        Text(album.name, style = LabelStyle, maxLines = 1)
+                    }
                 }
             }
         }
-    }
-    Row(
-        Modifier.clip(CircleShape).background(Lumi.Surface).padding(horizontal = 8.dp, vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        BarIcon(Icons.Filled.Close, "Cancelar", onClear)
-        Text(countText(chosen.size, "elegida", "elegidas"), style = LabelStyle, modifier = Modifier.padding(horizontal = 6.dp))
-        BarIcon(Icons.Filled.Share, "Enviar", { actions.share(chosen) })
-        BarIcon(Icons.Filled.Favorite, "Favorita", { vm.toggleFavorite(chosen.map { it.id }); onClear() })
-        BarIcon(Icons.Filled.Delete, "Mover a la papelera", { actions.trash(chosen, onClear) }, Lumi.Danger)
-        Box {
-            BarIcon(Icons.Filled.MoreVert, "Más", { menu = true })
-            DropdownMenu(menu, { menu = false }, containerColor = Lumi.Surface) {
-                DropdownMenuItem({ Text("Mover a un álbum") }, { menu = false; moving = true })
-                DropdownMenuItem({ Text("Copiar a un álbum") }, { menu = false; moving = false })
-                DropdownMenuItem({ Text("Comparar dos fotos") }, {
-                    menu = false
-                    val photos = chosen.filter { !it.isVideo }
-                    if (photos.size == 2) vm.open(Screen.Compare(photos[0].id, photos[1].id))
-                    else vm.say("Elige exactamente dos fotos para compararlas")
-                    onClear()
-                })
-                DropdownMenuItem({ Text("Hacer un collage") }, {
-                    menu = false
-                    val photos = chosen.filter { !it.isVideo }
-                    if (photos.size in 2..6) vm.open(Screen.Collage(photos.map { it.id }))
-                    else vm.say("Elige entre 2 y 6 fotos para el collage")
-                    onClear()
-                })
-                DropdownMenuItem({ Text("Mover a la carpeta privada") }, {
-                    menu = false
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(26.dp)).background(Lumi.Surface).padding(start = 4.dp, end = 4.dp, top = 2.dp, bottom = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                BarIcon(Icons.Filled.Close, "Cancelar", onClear)
+                Text(
+                    countText(chosen.size, "seleccionada", "seleccionadas"),
+                    style = LabelStyle.copy(fontSize = 15.sp, fontWeight = FontWeight.Bold),
+                    modifier = Modifier.weight(1f),
+                )
+                Text(formatSize(weight), style = SmallStyle.copy(fontSize = 13.sp), modifier = Modifier.padding(end = 14.dp))
+            }
+            Row(Modifier.fillMaxWidth()) {
+                SelectAction(Icons.Filled.Share, "Enviar", Modifier.weight(1f)) { actions.share(chosen) }
+                SelectAction(AlbumIcon, "Álbum", Modifier.weight(1f)) { moving = true }
+                SelectAction(Icons.Filled.Lock, "Privada", Modifier.weight(1f)) {
                     vm.hideInVault(chosen) { stored -> actions.deleteForever(stored) }
                     onClear()
-                })
+                }
+                // Borrar va en otro color para que no se toque por error.
+                SelectAction(Icons.Filled.Delete, "Borrar", Modifier.weight(1f), Lumi.Danger) { actions.trash(chosen, onClear) }
+                Box(Modifier.weight(1f)) {
+                    SelectAction(Icons.Filled.MoreVert, "Más", Modifier.fillMaxWidth()) { menu = true }
+                    DropdownMenu(menu, { menu = false }, containerColor = Lumi.Surface) {
+                        DropdownMenuItem({ Text("Marcar como favoritas") }, {
+                            menu = false
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            vm.toggleFavorite(chosen.map { it.id })
+                            onClear()
+                        })
+                        DropdownMenuItem({ Text("Copiar a un álbum") }, { menu = false; moving = false })
+                        DropdownMenuItem({ Text("Comparar dos fotos") }, {
+                            menu = false
+                            val photos = chosen.filter { !it.isVideo }
+                            if (photos.size == 2) vm.open(Screen.Compare(photos[0].id, photos[1].id))
+                            else vm.say("Elige exactamente dos fotos para compararlas")
+                            onClear()
+                        })
+                        DropdownMenuItem({ Text("Juntar en un PDF") }, {
+                            menu = false
+                            val photos = chosen.filter { !it.isVideo }
+                            if (photos.isEmpty()) vm.say("Elige al menos una foto para el PDF")
+                            else if (photos.size > 40) vm.say("Un PDF admite hasta 40 fotos")
+                            // Las páginas van de la más antigua a la más reciente, como se hicieron.
+                            else vm.open(Screen.Pdf(photos.sortedBy { it.date }.map { it.id }))
+                            onClear()
+                        })
+                        DropdownMenuItem({ Text("Hacer un collage") }, {
+                            menu = false
+                            val photos = chosen.filter { !it.isVideo }
+                            if (photos.size in 2..6) vm.open(Screen.Collage(photos.map { it.id }))
+                            else vm.say("Elige entre 2 y 6 fotos para el collage")
+                            onClear()
+                        })
+                    }
+                }
             }
         }
-    }
-
     }
 
     moving?.let { move ->
@@ -660,6 +669,27 @@ fun SelectionBar(chosen: List<MediaItem>, state: UiState, vm: LumiViewModel, act
         )
     }
 }
+
+/** Una acción de la barra de selección: icono con su nombre debajo. */
+@Composable
+private fun SelectAction(icon: ImageVector, label: String, modifier: Modifier = Modifier, tint: Color = Lumi.Ink, onClick: () -> Unit) {
+    Column(
+        modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        Icon(icon, null, Modifier.size(22.dp), tint = tint)
+        Text(label, style = SmallStyle, color = tint, maxLines = 1)
+    }
+}
+
+/** Icono de carpeta (el de Material). */
+val AlbumIcon: ImageVector = ImageVector.Builder("Album", 24.dp, 24.dp, 24f, 24f).apply {
+    addPath(
+        pathData = addPathNodes("M10,4H4c-1.1,0 -1.99,0.9 -1.99,2L2,18c0,1.1 0.9,2 2,2h16c1.1,0 2,-0.9 2,-2V8c0,-1.1 -0.9,-2 -2,-2h-8l-2,-2z"),
+        fill = SolidColor(Color.White),
+    )
+}.build()
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

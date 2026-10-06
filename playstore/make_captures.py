@@ -24,7 +24,7 @@ WHITE = (255, 255, 255)
 # nombre del archivo -> (frase grande, frase pequeña)
 SHOTS = [
     ("fotos", "Tus fotos, bonitas y a mano", "Pellizca para ir del año al día"),
-    ("buscar", "Busca con tus palabras", "Todo se analiza en tu teléfono"),
+    ("buscar", "Encuentra cualquier foto", "Todo se analiza en tu teléfono"),
     ("albumes", "Se ordena sola", "Viajes, cosas y tus carpetas"),
     ("visor", "Cada foto, a pantalla completa", "La app toma el color de la imagen"),
     ("editor", "Edita sin complicarte", "Recorta, ajusta, dibuja y quita el fondo"),

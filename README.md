@@ -1,4 +1,4 @@
-<p align="center">
+| Leer texto, reconocer cosas y quitar el fondo. Los modelos los descarga Google Play, no van en la app | Condiciones de ML Kit |<p align="center">
   <img src="playstore/icono-512.png" width="112" alt="Icono de Lumi Gallery">
 </p>
 
@@ -19,7 +19,7 @@
 
 ## Qué hace
 
-- **Busca con tus palabras.** "Perro en la playa", "cascada", "factura de marzo". Entiende lo que hay en la foto, lee el texto que aparece en ella y busca también por fecha, álbum y ciudad.
+- **Encuentra cualquier foto.** Por lo que hay en ella ("perro", "playa", "comida"), por el texto que aparece en la imagen, por fecha, álbum y ciudad.
 - **Se ordena sola.** Pellizca para ir del año al día, las fotos repetidas se apilan con la mejor encima, y hay álbumes automáticos de viajes y de temas.
 - **Bloqueo de verdad.** La app entera o álbumes sueltos, con huella, cara, el bloqueo del teléfono o un PIN propio. Carpeta privada cifrada.
 - **Edición.** Recortar, girar, enderezar, luz y color, filtros, dibujar y escribir encima, quitar el fondo y collage.
@@ -88,28 +88,24 @@ app/src/main/java/com/lumi/galeria/
 │   ├── Media.kt           Lectura de la biblioteca del teléfono
 │   ├── Analysis.kt        Fotos repetidas
 │   ├── Index.kt           Texto, lugar y nitidez de cada foto
-│   ├── Semantic.kt        Búsqueda por significado
 │   ├── Smart.kt           Buscador, álbumes automáticos, viajes y recuerdos
 │   ├── Vault.kt           Carpeta privada cifrada
 │   └── ...
 └── ui/                    Una pantalla por archivo: Timeline, Viewer, Editor, Albums, Search...
 
 app/src/main/assets/
-├── clip/                  Modelo de búsqueda por significado y su licencia
 └── places.bin             Ciudades del mundo, para poner nombre a los lugares
 
 playstore/                 Icono, gráfico, capturas y textos de la ficha de Google Play
 docs/                      Política de privacidad como página web (GitHub Pages)
 ```
 
-La interfaz está hecha con Kotlin y Jetpack Compose. Los textos de la app están en español.
+La interfaz está hecha con Kotlin y Jetpack Compose. Los textos de la app están escritos en español dentro del código. Para enseñarlos en inglés se traducen al pintarlos con la tabla de `English.kt`; añadir otro idioma es escribir otra tabla igual.
 
 ## Componentes de terceros
 
 | Componente | Uso | Licencia |
 |---|---|---|
-| [MobileCLIP S0](https://github.com/apple/ml-mobileclip) (Apple) | Búsqueda por significado | La de Apple, incluida en [`assets/clip/LICENSE.txt`](app/src/main/assets/clip/LICENSE.txt) |
-| [ONNX Runtime](https://onnxruntime.ai) | Ejecuta ese modelo en el teléfono | MIT |
 | [ML Kit](https://developers.google.com/ml-kit) (Google) | Leer texto, reconocer cosas y quitar el fondo | Condiciones de ML Kit |
 | [Natural Earth](https://www.naturalearthdata.com) | Lista de ciudades | Dominio público |
 | [Coil](https://coil-kt.github.io/coil/) | Carga de imágenes | Apache 2.0 |

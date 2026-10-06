@@ -7,7 +7,10 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Rect
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -21,14 +24,17 @@ import com.lumi.galeria.data.Analyzer
 import com.lumi.galeria.data.AutoAlbum
 import com.lumi.galeria.data.Backup
 import com.lumi.galeria.data.FILES_URI
+import com.lumi.galeria.data.Filters
+import com.lumi.galeria.data.Found
+import com.lumi.galeria.data.find
+import com.lumi.galeria.data.placeNames
+import com.lumi.galeria.data.readSnapshot
+import com.lumi.galeria.data.saveSnapshot
+import com.lumi.galeria.ui.AccentColor
 import com.lumi.galeria.data.HiddenFolder
 import com.lumi.galeria.data.findDuplicates
 import com.lumi.galeria.data.saveNewPhoto
 import com.lumi.galeria.data.savePng
-import com.lumi.galeria.data.CONCEPTS
-import com.lumi.galeria.data.Semantic
-import com.lumi.galeria.data.semanticPhrase
-import com.lumi.galeria.data.toEnglish
 import com.lumi.galeria.data.scanHidden
 import com.lumi.galeria.data.trimVideo
 import com.lumi.galeria.data.IndexEntry
@@ -66,6 +72,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** Columnas que admite la vista de día. */
+val DayColumns = 2..5
+
 enum class Level(val columns: Int, val label: String, val thumb: Int) {
     YEAR(6, "Año", 160),
     MONTH(4, "Mes", 320),
@@ -82,7 +91,7 @@ sealed interface Cell {
     }
 
     /** Tarjeta de recuerdos que encabeza la cuadrícula cuando hay fotos de estos días en otros años. */
-    data class Recall(val memory: Memory) : Cell {
+    data class Recall(val memory: Memory?) : Cell {
         override val key get() = "recuerdo"
     }
 }
@@ -137,6 +146,9 @@ sealed interface Screen {
     data class Markup(val id: Long) : Screen
     data class Trim(val id: Long) : Screen
     data class Collage(val ids: List<Long>) : Screen
+
+    /** Juntar estas fotos en un PDF. */
+    data class Pdf(val ids: List<Long>) : Screen
     data class Compare(val first: Long, val second: Long) : Screen
     data class Cutout(val id: Long) : Screen
     data object HiddenFolders : Screen
@@ -185,6 +197,8 @@ data class UiState(
     /** Fotos (sin vídeos) que hay en total, y cuántas faltan por pasar cada vuelta del análisis. */
     val topThings: List<Topic> = emptyList(),
     val topPlaces: List<Topic> = emptyList(),
+    /** Ciudad cercana a cada foto que guarda su lugar. */
+    val places: Map<Long, String> = emptyMap(),
     val photoCount: Int = 0,
     val unindexed: Int = 0,
     val deepPending: Int = 0,
@@ -216,15 +230,18 @@ data class UiState(
     val scanningHidden: Boolean = false,
     /** El vídeo está en una ventana flotante: solo debe verse el vídeo. */
     val pip: Boolean = false,
-    /** Cuántos elementos faltan por pasar por el modelo de búsqueda por significado. */
-    val semanticPending: Int = 0,
     /** Lo que devolvió la última búsqueda, en su orden; es lo que recorre el visor al abrir un resultado. */
     val searchResults: List<MediaItem> = emptyList(),
     val recentSearches: List<String> = emptyList(),
     val level: Level = Level.MONTH,
+    /** Columnas de la vista de día; se cambian pellizcando. */
+    val dayColumns: Int = 3,
     val pick: PickMode? = null,
     val message: String? = null,
     val theme: ThemeMode = ThemeMode.SYSTEM,
+    val accent: AccentColor = AccentColor.LILAC,
+    val language: AppLanguage = AppLanguage.SYSTEM,
+    val pureBlack: Boolean = false,
     val vaultOpen: Boolean = false,
     val vaultItems: List<VaultItem> = emptyList(),
     val backup: BackupState = BackupState(),
@@ -264,7 +281,6 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
     private val prefs = app.getSharedPreferences("lumi", Context.MODE_PRIVATE)
     private val analyzer = Analyzer(app)
     private val indexer = Indexer(app)
-    private val semantic = Semantic(app)
     private val backup = Backup(app)
     private val vault get() = LumiApp.vault
 
@@ -277,8 +293,12 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
             itemSort = runCatching { ItemSort.valueOf(prefs.getString(KEY_ITEM_SORT, null) ?: "NEWEST") }.getOrDefault(ItemSort.NEWEST),
             albumSort = runCatching { AlbumSort.valueOf(prefs.getString(KEY_ALBUM_SORT, null) ?: "RECENT") }.getOrDefault(AlbumSort.RECENT),
             oldestFirst = prefs.getBoolean(KEY_OLDEST_FIRST, false),
+            accent = runCatching { AccentColor.valueOf(prefs.getString(KEY_ACCENT, null) ?: "LILAC") }.getOrDefault(AccentColor.LILAC),
+            pureBlack = prefs.getBoolean(KEY_BLACK, false),
+            language = runCatching { AppLanguage.valueOf(prefs.getString(KEY_LANGUAGE, null) ?: "SYSTEM") }.getOrDefault(AppLanguage.SYSTEM),
             recentSearches = prefs.getString(KEY_RECENT, "").orEmpty().split('\n').filter { it.isNotBlank() },
             useTrash = prefs.getBoolean(KEY_USE_TRASH, true),
+            dayColumns = prefs.getInt(KEY_DAY_COLUMNS, 3).coerceIn(DayColumns),
             appLock = prefs.getBoolean(KEY_APP_LOCK, false),
             locked = prefs.getBoolean(KEY_APP_LOCK, false),
         ),
@@ -330,23 +350,27 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
     fun reload() {
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
-            // El sistema avisa varias veces seguidas por cada cambio; se espera a que termine.
-            delay(250)
+            if (lastLibrary == null) {
+                // Recién abierta: se pinta lo que había la última vez y, mientras, se lee lo que hay ahora.
+                val before = withContext(Dispatchers.IO) { readSnapshot(getApplication()) }
+                if (!before.isNullOrEmpty()) publish(before, emptyList(), withIndex = false)
+            } else {
+                // El sistema avisa varias veces seguidas por cada cambio; se espera a que termine.
+                delay(250)
+            }
             val library = withContext(Dispatchers.IO) { loadLibrary(getApplication()) }
             publish(library.active, library.trashed)
+            viewModelScope.launch(Dispatchers.IO) { saveSnapshot(getApplication(), library.active) }
             // A partir de aquí todo es análisis: va en un hilo aparte, despacio y sin estorbar.
             val found = withContext(Quiet.dispatcher) { analyzer.findStacks(library.active, kept) }
             if (found.size != stacks.size || found.zip(stacks).any { (a, b) -> a.best.id != b.best.id || a.members.size != b.members.size }) {
                 stacks = found
                 publish(library.active, library.trashed)
             }
-            // Primero lo rápido (cosas, lugar y huella), después el modelo de búsqueda y, al final,
-            // lo más lento: leer el texto de cada foto.
+            // Primero lo rápido (cosas, lugar y huella) y después lo lento: leer el texto de cada foto.
             withContext(Quiet.dispatcher) {
                 indexer.scan(library.active, canReadPlace, deep = false) { publishIndex(library.active) }
             }
-            publishIndex(library.active)
-            withContext(Quiet.dispatcher) { semantic.scan(library.active) { publishIndex(library.active) } }
             publishIndex(library.active)
             withContext(Quiet.dispatcher) {
                 indexer.scan(library.active, canReadPlace, deep = true) { publishIndex(library.active) }
@@ -369,7 +393,7 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** La biblioteca cambió: se rehace todo lo que se ve. */
-    private suspend fun publish(all: List<MediaItem>, trashed: List<MediaItem>) {
+    private suspend fun publish(all: List<MediaItem>, trashed: List<MediaItem>, withIndex: Boolean = true) {
         lastLibrary = all to trashed
         val settings = _state.value
         val items = visible(all)
@@ -399,7 +423,7 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
                 stackByBest = byBest,
                 tiles = tiles,
                 cells = (if (settings.oldestFirst) tiles.asReversed() else tiles).let { ordered ->
-                    Level.entries.associateWith { buildCells(ordered, byBest, it, memory) }
+                    Level.entries.associateWith { buildCells(ordered, byBest, it, memory, settings.filter == TileFilter.ALL && ordered.isNotEmpty()) }
                 },
                 albums = buildAlbums(all, lockedAlbums, hiddenAlbums, settings.albumSort, pinnedAlbums, covers),
                 lockedItems = if (settings.albumsUnlocked) all.filter { it.bucketId in lockedAlbums } else emptyList(),
@@ -425,7 +449,7 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
                 backup = if (it.backup.running) it.backup else next.backup,
             )
         }
-        publishIndex(all)
+        if (withIndex) publishIndex(all)
     }
 
     /** El análisis avanzó: solo cambia lo que depende de él. La cuadrícula no se toca. */
@@ -434,18 +458,18 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
         val next = withContext(Dispatchers.Default) {
             val index = indexer.snapshot()
             val photos = items.size
+            val names = placeNames(items, index)
             UiState(
-                // Los álbumes de cosas salen del modelo nuevo; mientras no haya mirado nada, de la lista antigua.
-                autoAlbums = buildTrips(items, index) + semantic.albums(items, CONCEPTS).ifEmpty { buildThings(items, index) },
+                autoAlbums = buildTrips(items, index) + buildThings(items, index),
                 blurry = indexer.blurry(items),
                 duplicates = findDuplicates(items, index).flatMap { it.drop(1) },
-                semanticPending = semantic.pending(items),
                 index = index,
-                // Con el modelo nuevo los temas salen mucho más finos; la lista antigua queda de reserva.
-                topThings = semantic.topics(items, CONCEPTS).ifEmpty { topThings(items, index) },
-                topPlaces = topPlaces(items, index),
+                topThings = topThings(items, index),
+                topPlaces = topPlaces(items, names),
+                places = names,
                 photoCount = photos,
-                unindexed = items.count { it.id !in index },
+                // Cuenta también las que esperan a que llegue el reconocimiento de Google Play.
+                unindexed = items.count { index[it.id]?.pending != false },
                 deepPending = items.count { index[it.id]?.deep != true },
             )
         }
@@ -454,10 +478,10 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
                 autoAlbums = next.autoAlbums,
                 blurry = next.blurry,
                 duplicates = next.duplicates,
-                semanticPending = next.semanticPending,
                 index = next.index,
                 topThings = next.topThings,
                 topPlaces = next.topPlaces,
+                places = next.places,
                 photoCount = next.photoCount,
                 unindexed = next.unindexed,
                 deepPending = next.deepPending,
@@ -467,9 +491,30 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setLevel(level: Level) = _state.update { it.copy(level = level) }
 
+    fun setDayColumns(columns: Int) {
+        val next = columns.coerceIn(DayColumns)
+        prefs.edit().putInt(KEY_DAY_COLUMNS, next).apply()
+        _state.update { it.copy(dayColumns = next) }
+    }
+
     fun setTheme(mode: ThemeMode) {
         prefs.edit().putString(KEY_THEME, mode.name).apply()
         _state.update { it.copy(theme = mode) }
+    }
+
+    fun setAccent(color: AccentColor) {
+        prefs.edit().putString(KEY_ACCENT, color.name).apply()
+        _state.update { it.copy(accent = color) }
+    }
+
+    fun setLanguage(language: AppLanguage) {
+        prefs.edit().putString(KEY_LANGUAGE, language.name).apply()
+        _state.update { it.copy(language = language) }
+    }
+
+    fun setPureBlack(on: Boolean) {
+        prefs.edit().putBoolean(KEY_BLACK, on).apply()
+        _state.update { it.copy(pureBlack = on) }
     }
 
     // --- Bloqueo de la app ---
@@ -654,15 +699,22 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- Búsqueda ---
 
-    /** Resultados de [query], con el modelo de significado si ya ha mirado alguna foto. */
-    suspend fun runSearch(query: String): List<MediaItem> {
+    /** Lo escrito y lo elegido en el buscador. Viven aquí para no perderse al abrir una foto y volver. */
+    var searchQuery by mutableStateOf("")
+    var searchFilters by mutableStateOf(Filters())
+
+    /** Abre el buscador en blanco. */
+    fun openSearch() {
+        searchQuery = ""
+        searchFilters = Filters()
+        open(Screen.Search)
+    }
+
+    /** Resultados de [query] con [filters], y las opciones que quedan por elegir. */
+    suspend fun runSearch(query: String, filters: Filters): Found {
         val now = _state.value
-        val found = withContext(Dispatchers.Default) {
-            val phrase = semanticPhrase(query)
-            val scores = if (phrase.isBlank() || semantic.size == 0) null else semantic.scores(phrase, toEnglish(phrase))
-            search(query, now.items, now.index, now.favorites, scores)
-        }
-        _state.update { it.copy(searchResults = found) }
+        val found = withContext(Dispatchers.Default) { find(query, filters, now.items, now.index, now.favorites, now.places) }
+        _state.update { it.copy(searchResults = found.results) }
         return found
     }
 
@@ -930,14 +982,19 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_OLDEST_FIRST = "oldestFirst"
         const val KEY_USE_TRASH = "useTrash"
         const val KEY_RECENT = "recentSearches"
+        const val KEY_DAY_COLUMNS = "dayColumns"
+        const val KEY_ACCENT = "accent"
+        const val KEY_BLACK = "pureBlack"
+        const val KEY_LANGUAGE = "language"
     }
 }
 
-private fun buildCells(tiles: List<MediaItem>, stackByBest: Map<Long, PhotoStack>, level: Level, memory: Memory?): List<Cell> {
+private fun buildCells(tiles: List<MediaItem>, stackByBest: Map<Long, PhotoStack>, level: Level, memory: Memory?, stories: Boolean): List<Cell> {
     val zone = ZoneId.systemDefault()
     val today = LocalDate.now(zone)
     val out = ArrayList<Cell>(tiles.size + 64)
-    if (memory != null) out += Cell.Recall(memory)
+    // La fila de recuerdos encabeza la vista completa; qué enseña lo decide la pantalla.
+    if (stories) out += Cell.Recall(memory)
     var groupKey = Long.MIN_VALUE
     var headerIndex = -1
     var count = 0

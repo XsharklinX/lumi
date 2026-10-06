@@ -56,16 +56,13 @@ Para generarlo de nuevo: `python compilar.py` desde la carpeta del proyecto.
   permiso en una galería, así que esa variante es solo para instalarla a mano.
 - **Sin permiso de internet.** Se puede comprobar en la ficha, en "Permisos". Es el argumento
   principal de privacidad.
-- **Quitar el fondo** usa un componente que Google Play descarga en el teléfono la primera vez.
-  Está explicado en la política de privacidad.
-- **Licencia del modelo de búsqueda.** El modelo que entiende las frases es MobileCLIP, de Apple.
-  Su licencia va incluida en la app (`assets/clip/LICENSE.txt`). Conviene leerla antes de
-  publicar para confirmar que cubre la distribución en una app comercial.
+- **Leer texto, reconocer cosas y quitar el fondo** usan componentes que Google Play descarga en
+  el teléfono, al instalar la app o la primera vez que hacen falta. No van dentro de la app, y
+  por eso pesa tan poco. Está explicado en la política de privacidad.
 - **Número de versión.** Cada subida necesita un `versionCode` mayor que el anterior. Se cambia
   en `app/build.gradle.kts`.
-- **Tamaño.** El AAB pesa unos 130 MB por los modelos de reconocimiento. Cada teléfono descarga
-  solo su parte, por debajo del límite de 200 MB de Google Play.
-
+- **Tamaño.** El AAB pesa unos 8 MB y el APK unos 6 MB. Los modelos de reconocimiento no van dentro:
+  los instala Google Play en el teléfono.
 ## Capturas
 
 Guarda pantallazos de la app en `capturas/originales/` con estos nombres y ejecuta

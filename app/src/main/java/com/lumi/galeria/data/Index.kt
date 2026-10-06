@@ -1,6 +1,9 @@
 package com.lumi.galeria.data
 
+import android.content.ContentValues
 import android.content.Context
+import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteOpenHelper
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.provider.MediaStore
@@ -32,6 +35,10 @@ class IndexEntry(
     val deep: Boolean,
     /** Huella visual de 64 bits: dos imágenes iguales dan la misma aunque cambie el tamaño. 0 si no hay. */
     val hash: Long,
+    /** Aún no se sabe qué cosas se ven: el reconocimiento no estaba disponible. Se reintenta. */
+    val pending: Boolean = false,
+    /** Color medio de la foto, opaco. 0 si aún no se ha calculado; [COLOR_NONE] si no se pudo. */
+    val color: Int = 0,
 ) {
     val hasPlace: Boolean get() = lat < 900f
 
@@ -43,14 +50,104 @@ class IndexEntry(
 private const val PLACE_UNTRIED = 999f
 private const val PLACE_NONE = 998f
 
+/** No se pudo sacar el color de la foto: no se vuelve a intentar. */
+const val COLOR_NONE = 1
+
 /**
- * Mira las fotos en dos vueltas. La primera es rápida (cosas, lugar y huella, sobre la miniatura)
- * y deja la búsqueda utilizable en poco tiempo. La segunda lee el texto y mide la nitidez a más
- * resolución, y puede tardar bastante en una biblioteca grande.
+ * Donde se guarda lo que se sabe de cada foto. Es una base de datos y no un archivo de texto para
+ * poder anotar solo las fotos que cambian, en vez de reescribirlo todo cada pocos segundos.
+ */
+private class IndexStore(private val context: Context) : SQLiteOpenHelper(context, "analisis.db", null, 1) {
+    override fun onCreate(db: SQLiteDatabase) {
+        db.execSQL(
+            "CREATE TABLE foto (id INTEGER PRIMARY KEY, modified INTEGER, blur REAL, lat REAL, lon REAL, " +
+                "labels TEXT, texto TEXT, deep INTEGER, hash INTEGER, pending INTEGER, color INTEGER)",
+        )
+        importOldFile(db)
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+
+    /** Lo analizado por versiones anteriores estaba en un archivo de texto: se pasa aquí una vez. */
+    private fun importOldFile(db: SQLiteDatabase) {
+        val old = File(context.filesDir, "index4.tsv")
+        if (!old.exists()) return
+        runCatching {
+            old.forEachLine { line ->
+                val p = line.split('\t')
+                if (p.size == 9) {
+                    val pending = p[5] == "?"
+                    write(
+                        db, p[0].toLong(),
+                        IndexEntry(
+                            p[1].toLong(), p[2].toFloat(), p[3].toFloat(), p[4].toFloat(),
+                            if (p[5].isEmpty() || pending) emptyList() else p[5].split('|'), p[6], p[7] == "1", p[8].toLong(), pending,
+                        ),
+                    )
+                }
+            }
+        }
+        old.delete()
+    }
+
+    private fun write(db: SQLiteDatabase, id: Long, e: IndexEntry) {
+        val row = ContentValues(11)
+        row.put("id", id)
+        row.put("modified", e.modified)
+        row.put("blur", e.blur)
+        row.put("lat", e.lat)
+        row.put("lon", e.lon)
+        row.put("labels", e.labels.joinToString("|"))
+        row.put("texto", e.text)
+        row.put("deep", if (e.deep) 1 else 0)
+        row.put("hash", e.hash)
+        row.put("pending", if (e.pending) 1 else 0)
+        row.put("color", e.color)
+        db.insertWithOnConflict("foto", null, row, SQLiteDatabase.CONFLICT_REPLACE)
+    }
+
+    fun readAll(into: MutableMap<Long, IndexEntry>) {
+        readableDatabase.rawQuery("SELECT id, modified, blur, lat, lon, labels, texto, deep, hash, pending, color FROM foto", null).use { c ->
+            while (c.moveToNext()) {
+                val labels = c.getString(5).orEmpty()
+                into[c.getLong(0)] = IndexEntry(
+                    c.getLong(1), c.getFloat(2), c.getFloat(3), c.getFloat(4),
+                    if (labels.isEmpty()) emptyList() else labels.split('|'), c.getString(6).orEmpty(),
+                    c.getInt(7) == 1, c.getLong(8), c.getInt(9) == 1, c.getInt(10),
+                )
+            }
+        }
+    }
+
+    /** Anota de una vez las fotos que cambiaron y quita las que ya no existen. */
+    fun save(changed: Map<Long, IndexEntry>, gone: Collection<Long>) {
+        if (changed.isEmpty() && gone.isEmpty()) return
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            changed.forEach { (id, entry) -> write(db, id, entry) }
+            gone.forEach { db.delete("foto", "id = ?", arrayOf(it.toString())) }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+    }
+}
+
+/**
+ * Mira las fotos en dos vueltas. La primera es rápida (cosas, lugar, huella y color, sobre la
+ * miniatura) y deja la búsqueda utilizable en poco tiempo. La segunda lee el texto y mide la
+ * nitidez a más resolución, y puede tardar bastante en una biblioteca grande.
+ *
+ * Los modelos que reconocen cosas y leen texto los descarga Google Play, no van dentro de la
+ * app. Hasta que llegan, las llamadas fallan: lo que no se pudo mirar se deja anotado como
+ * pendiente y se reintenta en la siguiente pasada, en vez de darlo por visto y vacío.
  */
 class Indexer(private val context: Context) {
-    private val file = File(context.filesDir, "index4.tsv")
+    private val store = IndexStore(context)
     private val entries = ConcurrentHashMap<Long, IndexEntry>()
+    private val dirty = HashSet<Long>()
+    private val gone = HashSet<Long>()
     private var loaded = false
 
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
@@ -66,38 +163,32 @@ class Indexer(private val context: Context) {
     private fun load() {
         if (loaded) return
         loaded = true
-        listOf("index.tsv", "index2.tsv", "index3.tsv", "detail.tsv").forEach { File(context.filesDir, it).delete() }
-        if (!file.exists()) return
-        runCatching {
-            file.forEachLine { line ->
-                val p = line.split('\t')
-                if (p.size == 9) {
-                    entries[p[0].toLong()] = IndexEntry(
-                        p[1].toLong(), p[2].toFloat(), p[3].toFloat(), p[4].toFloat(),
-                        if (p[5].isEmpty()) emptyList() else p[5].split('|'), p[6], p[7] == "1", p[8].toLong(),
-                    )
-                }
-            }
-        }
+        listOf("index.tsv", "index2.tsv", "index3.tsv", "detail.tsv", "semantic.bin").forEach { File(context.filesDir, it).delete() }
+        runCatching { store.readAll(entries) }
+    }
+
+    private fun put(id: Long, entry: IndexEntry) {
+        entries[id] = entry
+        dirty += id
     }
 
     private fun save() {
         runCatching {
-            file.bufferedWriter().use { w ->
-                entries.forEach { (id, e) ->
-                    w.write("$id\t${e.modified}\t${e.blur}\t${e.lat}\t${e.lon}\t${e.labels.joinToString("|")}\t${e.text}\t${if (e.deep) 1 else 0}\t${e.hash}\n")
-                }
-            }
+            store.save(dirty.mapNotNull { id -> entries[id]?.let { id to it } }.toMap(), gone)
+            dirty.clear()
+            gone.clear()
         }
     }
 
     /**
-     * [deep] elige la vuelta: la rápida (cosas, lugar y huella) o la lenta (texto y nitidez).
+     * [deep] elige la vuelta: la rápida (cosas, lugar, huella y color) o la lenta (texto y nitidez).
      * [onProgress] avisa de vez en cuando para que la pantalla enseñe lo que ya se sabe.
      */
     suspend fun scan(items: List<MediaItem>, canReadPlace: Boolean, deep: Boolean, onProgress: suspend () -> Unit) {
         load()
-        entries.keys.retainAll(items.mapTo(HashSet()) { it.id })
+        val alive = items.mapTo(HashSet()) { it.id }
+        entries.keys.filterTo(gone) { it !in alive }
+        entries.keys.retainAll(alive)
         var fresh = 0
         var lastReport = System.currentTimeMillis()
 
@@ -109,26 +200,43 @@ class Indexer(private val context: Context) {
             save()
             onProgress()
         }
+        if (gone.isNotEmpty()) save()
 
-        // Primera vuelta: cosas, lugar y huella. Los vídeos también, mirando su fotograma de portada.
+        // Primera vuelta: cosas, lugar, huella y color. Los vídeos también, mirando su fotograma de portada.
+        // Si el reconocimiento falla una vez, no se vuelve a intentar en esta pasada.
+        var labelsDown = false
         for (item in if (deep) emptyList() else items) {
             coroutineContext.ensureActive()
             val known = entries[item.id]?.takeIf { it.modified == item.modified }
-            if (known != null && !(known.lat == PLACE_UNTRIED && canReadPlace)) continue
+            val retry = known?.pending == true && !labelsDown
+            // Lo analizado por versiones anteriores no tiene color: se saca de la miniatura, sin más.
+            val needColor = known != null && known.color == 0
+            if (known != null && !retry && !needColor && !(known.lat == PLACE_UNTRIED && canReadPlace)) continue
             Quiet.whenIdle()
-            val place = if (canReadPlace && !item.isVideo) readPlace(item) else null
-            val none = if (canReadPlace || item.isVideo) PLACE_NONE else PLACE_UNTRIED
-            val quick = if (known == null) quickLook(item) else null
-            entries[item.id] = IndexEntry(
-                modified = item.modified,
-                blur = known?.blur ?: -1f,
-                lat = place?.first ?: none,
-                lon = place?.second ?: none,
-                labels = known?.labels ?: quick?.first.orEmpty(),
-                text = known?.text.orEmpty(),
-                // En los vídeos no hay texto ni nitidez que leer: quedan listos en esta vuelta.
-                deep = known?.deep ?: item.isVideo,
-                hash = known?.hash ?: quick?.second ?: 0L,
+            val place = when {
+                known != null && known.lat != PLACE_UNTRIED -> known.lat to known.lon
+                canReadPlace && !item.isVideo -> readPlace(item) ?: (PLACE_NONE to PLACE_NONE)
+                canReadPlace || item.isVideo -> PLACE_NONE to PLACE_NONE
+                else -> PLACE_UNTRIED to PLACE_UNTRIED
+            }
+            val wantLabels = known == null || retry
+            val look = if (wantLabels || needColor) quickLook(item, withLabels = wantLabels && !labelsDown) else null
+            if (wantLabels && look != null && look.labels == null) labelsDown = true
+            put(
+                item.id,
+                IndexEntry(
+                    modified = item.modified,
+                    blur = known?.blur ?: -1f,
+                    lat = place.first,
+                    lon = place.second,
+                    labels = if (wantLabels) look?.labels.orEmpty() else known?.labels.orEmpty(),
+                    text = known?.text.orEmpty(),
+                    // En los vídeos no hay texto ni nitidez que leer: quedan listos en esta vuelta.
+                    deep = known?.deep ?: item.isVideo,
+                    hash = known?.hash ?: look?.hash ?: 0L,
+                    pending = if (wantLabels) look?.labels == null else known?.pending ?: false,
+                    color = look?.color ?: known?.color ?: COLOR_NONE,
+                ),
             )
             fresh++
             report()
@@ -137,30 +245,60 @@ class Indexer(private val context: Context) {
 
         if (!deep) return
 
-        // Segunda vuelta: texto y nitidez.
+        // Segunda vuelta: texto y nitidez. Una foto cuyo texto no se pudo leer queda para la
+        // próxima pasada; si fallan varias seguidas es que el lector aún no está, y se deja.
+        var failures = 0
         for (item in items) {
             coroutineContext.ensureActive()
             val known = entries[item.id] ?: continue
             if (known.deep) continue
             Quiet.whenIdle()
             val (text, blur) = readDeep(item)
-            entries[item.id] = IndexEntry(known.modified, blur, known.lat, known.lon, known.labels, text, true, known.hash)
+            if (text == null) {
+                if (++failures >= 3) break
+                continue
+            }
+            failures = 0
+            put(item.id, IndexEntry(known.modified, blur, known.lat, known.lon, known.labels, text, true, known.hash, known.pending, known.color))
             fresh++
             report()
         }
         report(force = true)
     }
 
-    /** Sobre la miniatura: qué cosas se ven y la huella visual. */
-    private fun quickLook(item: MediaItem): Pair<List<String>, Long> = runCatching {
-        val thumb = context.contentResolver.loadThumbnail(item.uri, Size(384, 384), null)
-        val labels = runCatching { Tasks.await(labeler.process(InputImage.fromBitmap(thumb, 0))).take(20).map { it.text } }.getOrDefault(emptyList())
-        val hash = differenceHash(thumb)
-        thumb.recycle()
-        labels to hash
-    }.getOrDefault(emptyList<String>() to 0L)
+    /** Lo que sale de mirar la miniatura. [labels] es null si el reconocimiento no respondió o no se pidió. */
+    private class Look(val labels: List<String>?, val hash: Long, val color: Int)
 
-    private fun readDeep(item: MediaItem): Pair<String, Float> {
+    /** Sobre la miniatura: qué cosas se ven, la huella visual y el color medio. */
+    private fun quickLook(item: MediaItem, withLabels: Boolean): Look = runCatching {
+        val thumb = context.contentResolver.loadThumbnail(item.uri, Size(384, 384), null)
+        val labels = if (!withLabels) null else runCatching {
+            Tasks.await(labeler.process(InputImage.fromBitmap(thumb, 0))).take(20).map { it.text }
+        }.getOrNull()
+        val hash = differenceHash(thumb)
+        val color = averageColor(thumb)
+        thumb.recycle()
+        Look(labels, hash, color)
+    }.getOrDefault(Look(emptyList(), 0L, COLOR_NONE))
+
+    /** Color medio de la imagen, opaco. Es lo que se pinta en su hueco mientras carga la miniatura. */
+    private fun averageColor(bitmap: Bitmap): Int {
+        var r = 0
+        var g = 0
+        var b = 0
+        val steps = 12
+        for (y in 0 until steps) for (x in 0 until steps) {
+            val pixel = bitmap.getPixel((x * 2 + 1) * bitmap.width / (steps * 2), (y * 2 + 1) * bitmap.height / (steps * 2))
+            r += pixel shr 16 and 0xFF
+            g += pixel shr 8 and 0xFF
+            b += pixel and 0xFF
+        }
+        val n = steps * steps
+        return (0xFF shl 24) or (r / n shl 16) or (g / n shl 8) or (b / n)
+    }
+
+    /** Texto y nitidez. El texto es null si el lector no respondió. */
+    private fun readDeep(item: MediaItem): Pair<String?, Float> {
         val bitmap = try {
             ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, item.uri)) { decoder, info, _ ->
                 decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
@@ -175,7 +313,7 @@ class Indexer(private val context: Context) {
         }
         val text = runCatching {
             Tasks.await(recognizer.process(InputImage.fromBitmap(bitmap, 0))).text.replace(Regex("\\s+"), " ").trim().take(800)
-        }.getOrDefault("")
+        }.getOrNull()
         val blur = if (item.isScreenshot) -1f else detailScore(bitmap)
         bitmap.recycle()
         return text to blur

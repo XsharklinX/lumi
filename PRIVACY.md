@@ -16,9 +16,9 @@ Ninguno. La app no tiene permiso de acceso a internet, no pide una cuenta, no mu
 
 ## Qué se analiza y dónde
 
-Para que puedas buscar con tus palabras, detectar fotos repetidas o leer el texto de una imagen, la app analiza tus fotos. Ese análisis se hace por completo en tu teléfono y su resultado se guarda solo en él. Se borra al desinstalar la app.
+Para que puedas buscar en tus fotos, detectar fotos repetidas o leer el texto de una imagen, la app analiza tus fotos. Ese análisis se hace por completo en tu teléfono y su resultado se guarda solo en él. Se borra al desinstalar la app.
 
-La función «Quitar el fondo» usa un componente de los servicios de Google Play. La primera vez que la usas, Google Play puede descargar ese componente en tu teléfono. La separación del fondo se hace igualmente en el dispositivo y tus fotos no se envían a ningún servidor.
+Los componentes que leen el texto, reconocen lo que hay en una foto y quitan el fondo son de los servicios de Google Play. Google Play los descarga en tu teléfono al instalar la app o la primera vez que hacen falta. El análisis se hace igualmente en el dispositivo y tus fotos no se envían a ningún servidor.
 
 ## Carpeta privada y bloqueo
 
@@ -64,9 +64,9 @@ None. The app has no internet permission, does not ask for an account, shows no 
 
 ## What is analysed, and where
 
-So that you can search in your own words, find repeated photos or read the text in a picture, the app analyses your photos. That analysis happens entirely on your phone and its results are stored only there. They are deleted when you uninstall the app.
+So that you can search your photos, find repeated photos or read the text in a picture, the app analyses your photos. That analysis happens entirely on your phone and its results are stored only there. They are deleted when you uninstall the app.
 
-The "Remove background" feature uses a Google Play services component. The first time you use it, Google Play may download that component to your phone. The background is still separated on the device and your photos are not sent to any server.
+The components that read text, recognise what is in a photo and remove the background belong to Google Play services. Google Play downloads them to your phone when the app is installed or the first time they are needed. The analysis still happens on the device and your photos are not sent to any server.
 
 ## Private folder and lock
 

@@ -14,7 +14,20 @@ import kotlin.math.sqrt
 
 // ---------- Búsqueda ----------
 
-private val STOP = setOf("de", "del", "en", "la", "el", "los", "las", "un", "una", "con", "y", "al", "a", "mi", "mis", "que", "por")
+private val STOP = setOf(
+    "de", "del", "en", "la", "el", "los", "las", "un", "una", "con", "y", "al", "a", "mi", "mis", "que", "por",
+    "the", "of", "in", "on", "at", "an", "and", "with", "my", "from",
+)
+
+/** Palabras que acotan una búsqueda, escritas en inglés -> la que entiende el buscador. */
+private val FROM_ENGLISH = mapOf(
+    "january" to "enero", "february" to "febrero", "march" to "marzo", "april" to "abril", "may" to "mayo", "june" to "junio",
+    "july" to "julio", "august" to "agosto", "september" to "septiembre", "october" to "octubre", "november" to "noviembre",
+    "december" to "diciembre", "today" to "hoy", "yesterday" to "ayer", "text" to "texto",
+    "photo" to "foto", "photos" to "foto", "picture" to "foto", "pictures" to "foto",
+    "favorite" to "favorita", "favorites" to "favorita", "favourite" to "favorita", "favourites" to "favorita",
+    "screenshot" to "captura", "screenshots" to "captura",
+)
 private val MONTHS = listOf(
     "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
 )
@@ -90,26 +103,10 @@ fun topThings(items: List<MediaItem>, index: Map<Long, IndexEntry>, limit: Int =
     }
 }
 
-/** Temas que se proponen en el buscador: la palabra que se enseña y cómo se le describe al modelo. */
-val CONCEPTS: List<Pair<String, String>> = listOf(
-    "perros" to "a dog", "gatos" to "a cat", "pájaros" to "a bird", "caballos" to "a horse",
-    "playa" to "a beach", "mar" to "the sea", "montaña" to "mountains", "nieve" to "snow", "bosque" to "a forest",
-    "cascadas" to "a waterfall", "lagos y ríos" to "a lake or a river", "atardeceres" to "a sunset", "noche" to "the city at night",
-    "flores" to "flowers", "comida" to "a plate of food", "café" to "a cup of coffee", "fruta" to "fruit",
-    "ciudad" to "city buildings and streets", "coches" to "a car", "retratos" to "a portrait of a person",
-    "grupos" to "a group of people", "bebés" to "a baby", "selfies" to "a selfie", "bodas" to "a wedding",
-    "fiestas" to "a party", "documentos" to "a document with text", "dibujos" to "a drawing or a cartoon", "anime" to "anime",
-    "memes" to "a meme", "deporte" to "people playing sports",
-)
-
 /** Ciudades cerca de las que hay fotos. */
-fun topPlaces(items: List<MediaItem>, index: Map<Long, IndexEntry>, limit: Int = 8): List<Topic> {
+fun topPlaces(items: List<MediaItem>, names: Map<Long, String>, limit: Int = 8): List<Topic> {
     val groups = HashMap<String, ArrayList<MediaItem>>()
-    for (item in items) {
-        val entry = index[item.id]?.takeIf { it.hasPlace } ?: continue
-        val city = nearestCity(entry.lat.toDouble(), entry.lon.toDouble(), NEAR_CITY_KM) ?: continue
-        groups.getOrPut(city.name) { ArrayList() } += item
-    }
+    for (item in items) groups.getOrPut(names[item.id] ?: continue) { ArrayList() } += item
     return groups.entries.sortedByDescending { it.value.size }.take(limit).map { Topic(it.key, it.value.size, it.value.first()) }
 }
 
@@ -119,36 +116,16 @@ private fun isFilterWord(token: String): Boolean =
         token == "hoy" || token == "ayer" || token == "texto" ||
         sameWord(token, "video") || sameWord(token, "foto") || sameWord(token, "favorita") || sameWord(token, "captura")
 
-/** Lo que queda de la búsqueda al quitar fechas y tipos: la frase que se compara con las fotos. */
-fun semanticPhrase(query: String): String =
-    normalize(query).replace(NOT_WORD, " ").trim().split(' ').filter { it.isNotEmpty() && !isFilterWord(it) }.joinToString(" ")
-
-/** La misma frase en inglés, si todas sus palabras tienen traducción conocida; si no, null. */
-fun toEnglish(phrase: String): String? {
-    val words = phrase.split(' ').filter { it.length >= 2 && it !in STOP }
-    if (words.isEmpty()) return null
-    return words.map { token ->
-        // Varias cosas comparten palabra ("perro" es Dog, pero también cada raza): vale la más corta.
-        PLAIN_WORDS.entries.filter { (_, list) -> sameWord(list.first(), token) }.minByOrNull { it.key.length }?.key?.lowercase() ?: return null
-    }.joinToString(" ")
-}
-
 /**
  * Busca por lo que se ve en la foto, por el texto que contiene, por lugar ("madrid"), por fecha
  * ("agosto", "2025", "ayer"), por álbum, por nombre de archivo y por tipo ("vídeos", "capturas",
- * "favoritas", "texto").
- *
- * [semantic] es el parecido de cada foto con la frase, calculado por el modelo. Con él, una foto
- * entra si se parece lo bastante a la frase o si las palabras aparecen literalmente (en su texto,
- * su álbum o su nombre); y salen primero las que más se parecen. Sin él, se usa la lista fija de
- * cosas que reconoce el modelo antiguo.
+ * "favoritas", "texto"). Todas las palabras tienen que cumplirse.
  */
 fun search(
     query: String,
     items: List<MediaItem>,
     index: Map<Long, IndexEntry>,
     favorites: Set<Long>,
-    semantic: Map<Long, Float>? = null,
 ): List<MediaItem> {
     var plain = " " + normalize(query).replace(NOT_WORD, " ").trim() + " "
     if (plain.isBlank()) return emptyList()
@@ -166,7 +143,7 @@ fun search(
             plain = plain.replace(name, " ")
         }
     }
-    val tokens = plain.trim().split(' ').filter { it.length >= 2 && it !in STOP }
+    val tokens = plain.trim().split(' ').filter { it.length >= 2 && it !in STOP }.map { FROM_ENGLISH[it] ?: it }
     if (tokens.isEmpty() && cities.isEmpty()) return emptyList()
     val filters = tokens.filter(::isFilterWord)
     val words = tokens - filters.toSet()
@@ -176,15 +153,10 @@ fun search(
     val labelSets = words.associateWith(::labelsFor)
     val albumNames = HashMap<Long, String>()
 
-    val scores = semantic?.takeIf { words.isNotEmpty() && it.isNotEmpty() }
-    // Lo que se parece de verdad queda cerca de la mejor; lo demás, claramente por debajo.
-    val floor = maxOf(MIN_LIKENESS, (scores?.values?.maxOrNull() ?: 0f) * 0.8f)
-
     fun literal(item: MediaItem, entry: IndexEntry?, token: String): Boolean {
         val wanted = labelSets.getValue(token)
         return entry?.plainText?.contains(token) == true ||
-            // La lista fija de cosas solo se usa con lo que el modelo nuevo aún no ha mirado.
-            (wanted.isNotEmpty() && scores?.containsKey(item.id) != true && entry?.labels?.any { it in wanted } == true) ||
+            (wanted.isNotEmpty() && entry?.labels?.any { it in wanted } == true) ||
             // Carpeta, ruta y nombre del archivo: así se llega a lo que viene de una app
             // ("tiktok", "whatsapp", "instagram") aunque se escriba en plural.
             albumNames.getOrPut(item.bucketId) { normalize(albumName(item.bucket) + " " + item.path) }.let { where ->
@@ -215,13 +187,10 @@ fun search(
                 else -> date.year == token.toInt()
             }
         }
-        passes && (words.isEmpty() || (scores?.get(item.id) ?: 0f) >= floor || words.all { literal(item, entry, it) })
+        passes && words.all { literal(item, entry, it) }
     }
-    return if (scores == null) hits else hits.sortedByDescending { scores[it.id] ?: 0f }
+    return hits
 }
-
-/** Parecido mínimo para dar una foto por buena; sale de probar el modelo con fotos y frases reales. */
-private const val MIN_LIKENESS = 0.16f
 
 // ---------- Álbumes automáticos ----------
 
@@ -351,4 +320,140 @@ fun buildMemory(items: List<MediaItem>): Memory? {
     }
     val years = found.keys.minOrNull() ?: return null
     return Memory(if (years == 1) "Hace un año" else "Hace $years años", found.getValue(years))
+}
+
+// ---------- Filtros del buscador ----------
+
+/** Tipos de archivo por los que se puede acotar una búsqueda. Se pueden sumar: "vídeos" y "favoritas". */
+enum class Kind(val label: String) {
+    PHOTOS("Fotos"), VIDEOS("Vídeos"), FAVORITES("Favoritas"), SCREENSHOTS("Capturas"), TEXT("Con texto"), GIFS("GIF"),
+}
+
+/** Lo que hay elegido en el buscador además de lo escrito. Todo lo elegido tiene que cumplirse. */
+data class Filters(
+    val kinds: Set<Kind> = emptySet(),
+    val year: Int? = null,
+    /** De 1 a 12; solo se usa con un año elegido. */
+    val month: Int? = null,
+    val place: String? = null,
+    val album: Long? = null,
+    val thing: String? = null,
+) {
+    val isEmpty: Boolean get() = kinds.isEmpty() && year == null && month == null && place == null && album == null && thing == null
+}
+
+/** Una opción de un filtro, con las fotos que quedarían al elegirla. */
+class Option<T>(val value: T, val label: String, val count: Int)
+
+/**
+ * Resultado de una búsqueda y las opciones que tiene sentido ofrecer a continuación. Solo salen
+ * opciones con alguna foto, así que elegir una nunca deja la pantalla vacía.
+ */
+class Found(
+    val results: List<MediaItem>,
+    val kinds: List<Option<Kind>> = emptyList(),
+    val years: List<Option<Int>> = emptyList(),
+    val months: List<Option<Int>> = emptyList(),
+    val places: List<Option<String>> = emptyList(),
+    val albums: List<Option<Long>> = emptyList(),
+    val things: List<Option<String>> = emptyList(),
+)
+
+/** Las cosas que se ven en una foto, con la palabra que se enseña al usuario. */
+fun thingWords(entry: IndexEntry?): Set<String> {
+    val labels = entry?.labels ?: return emptySet()
+    if (labels.isEmpty()) return emptySet()
+    return labels.filter { it !in VAGUE }.mapNotNullTo(HashSet()) { WORDS[it]?.firstOrNull() }
+}
+
+private val cityNames = java.util.concurrent.ConcurrentHashMap<Long, String>()
+
+/** Ciudad cercana a cada foto que guarda su lugar. Las que no tienen ninguna cerca no aparecen. */
+fun placeNames(items: List<MediaItem>, index: Map<Long, IndexEntry>): Map<Long, String> {
+    val names = HashMap<Long, String>()
+    for (item in items) {
+        val entry = index[item.id]?.takeIf { it.hasPlace } ?: continue
+        // Buscar la ciudad más cercana es lento y las fotos de un mismo sitio se repiten mucho:
+        // se recuerda el resultado por cada kilómetro de mapa, más o menos.
+        val cell = (Math.round(entry.lat * 100.0) shl 32) xor (Math.round(entry.lon * 100.0) and 0xFFFFFFFFL)
+        val name = cityNames.getOrPut(cell) { nearestCity(entry.lat.toDouble(), entry.lon.toDouble(), NEAR_CITY_KM)?.name.orEmpty() }
+        if (name.isNotEmpty()) names[item.id] = name
+    }
+    return names
+}
+
+private fun hasKind(kind: Kind, item: MediaItem, entry: IndexEntry?, favorites: Set<Long>): Boolean = when (kind) {
+    Kind.PHOTOS -> !item.isVideo && !item.isScreenshot
+    Kind.VIDEOS -> item.isVideo
+    Kind.FAVORITES -> item.id in favorites
+    Kind.SCREENSHOTS -> item.isScreenshot
+    Kind.TEXT -> (entry?.text?.length ?: 0) >= 40
+    Kind.GIFS -> item.isGif
+}
+
+/**
+ * Busca [query] (si hay algo escrito) y aplica [filters]. Para cada filtro cuenta sus opciones
+ * sobre lo que queda al aplicar todos los demás, de modo que se puede cambiar de año o de lugar
+ * sin tener que quitar antes el que estaba puesto.
+ */
+fun find(
+    query: String,
+    filters: Filters,
+    items: List<MediaItem>,
+    index: Map<Long, IndexEntry>,
+    favorites: Set<Long>,
+    places: Map<Long, String>,
+): Found {
+    val base = if (query.isBlank()) items else search(query, items, index, favorites)
+    // Sin nada escrito ni elegido no hay resultados que enseñar, pero sí opciones que ofrecer.
+    val idle = query.isBlank() && filters.isEmpty
+
+    val zone = ZoneId.systemDefault()
+    val results = ArrayList<MediaItem>()
+    val kinds = IntArray(Kind.entries.size)
+    val years = HashMap<Int, Int>()
+    val months = IntArray(13)
+    val placeCount = HashMap<String, Int>()
+    val albumCount = HashMap<Long, Int>()
+    val albumNames = HashMap<Long, String>()
+    val thingCount = HashMap<String, Int>()
+
+    for (item in base) {
+        val entry = index[item.id]
+        val date = Instant.ofEpochMilli(item.date).atZone(zone)
+        val place = places[item.id]
+        val things = thingWords(entry)
+
+        val okKind = filters.kinds.all { hasKind(it, item, entry, favorites) }
+        val okYear = filters.year == null || date.year == filters.year
+        val okMonth = filters.month == null || date.monthValue == filters.month
+        val okPlace = filters.place == null || place == filters.place
+        val okAlbum = filters.album == null || item.bucketId == filters.album
+        val okThing = filters.thing == null || filters.thing in things
+        val failed = (if (okKind) 0 else 1) + (if (okYear) 0 else 1) + (if (okMonth) 0 else 1) +
+            (if (okPlace) 0 else 1) + (if (okAlbum) 0 else 1) + (if (okThing) 0 else 1)
+        if (failed > 1) continue
+        if (failed == 0) results += item
+
+        // Cada filtro cuenta lo que pasa todos los demás.
+        if (failed == 0) Kind.entries.forEach { if (hasKind(it, item, entry, favorites)) kinds[it.ordinal]++ }
+        if (failed == 0 || !okYear) years.merge(date.year, 1, Int::plus)
+        if ((failed == 0 || !okMonth) && filters.year != null) months[date.monthValue]++
+        if ((failed == 0 || !okPlace) && place != null) placeCount.merge(place, 1, Int::plus)
+        if (failed == 0 || !okAlbum) {
+            albumCount.merge(item.bucketId, 1, Int::plus)
+            albumNames.getOrPut(item.bucketId) { albumName(item.bucket) }
+        }
+        if (failed == 0 || !okThing) things.forEach { thingCount.merge(it, 1, Int::plus) }
+    }
+
+    return Found(
+        results = if (idle) emptyList() else results,
+        kinds = Kind.entries.filter { kinds[it.ordinal] > 0 || it in filters.kinds }.map { Option(it, it.label, kinds[it.ordinal]) },
+        years = years.entries.sortedByDescending { it.key }.map { Option(it.key, it.key.toString(), it.value) },
+        months = (1..12).filter { months[it] > 0 }.map { Option(it, MONTHS[it - 1].replaceFirstChar(Char::uppercase), months[it]) },
+        places = placeCount.entries.sortedByDescending { it.value }.take(40).map { Option(it.key, it.key, it.value) },
+        albums = albumCount.entries.sortedByDescending { it.value }.map { Option(it.key, albumNames[it.key].orEmpty(), it.value) },
+        things = thingCount.entries.sortedByDescending { it.value }.take(40).map { Option(it.key, it.key.replaceFirstChar(Char::uppercase), it.value) },
+    )
 }

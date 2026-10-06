@@ -11,14 +11,14 @@ Lumi Gallery: fotos y vídeos
 
 **Descripción breve** (73)
 
-Galería rápida y privada: busca con tus palabras, sin anuncios ni cuenta.
+Galería rápida, ligera y privada: sin anuncios, sin cuenta y sin internet.
 
 **Descripción completa**
 
 Lumi Gallery es una galería hecha para que tus fotos sean lo primero. Es rápida, se ordena sola y no te pide cuenta ni te enseña anuncios.
 
-BUSCA CON TUS PALABRAS
-Escribe lo que recuerdas de la foto: "perro en la playa", "cascada", "cumpleaños". Lumi entiende lo que hay en la imagen, lee el texto que aparece en ella y también busca por fecha, por álbum y por lugar. Todo el análisis se hace dentro del teléfono.
+ENCUENTRA CUALQUIER FOTO
+Busca por lo que hay en la foto ("perro", "playa", "comida"), por el texto que aparece en ella, por fecha, por álbum y por lugar. Todo el análisis se hace dentro del teléfono.
 
 TU GALERÍA, ORDENADA SOLA
 • Pellizca para pasar de ver el año entero a un día concreto.
@@ -56,14 +56,14 @@ Lumi Gallery: photos & video
 
 **Short description** (73)
 
-A fast, private gallery: search in your own words, no ads and no account.
+A fast, light, private gallery: no ads, no account and no internet.
 
 **Full description**
 
 Lumi Gallery is a gallery that puts your photos first. It is fast, it tidies itself and it never asks for an account or shows ads.
 
-SEARCH IN YOUR OWN WORDS
-Type what you remember about the photo: "dog on the beach", "waterfall", "birthday". Lumi understands what is in the picture, reads the text that appears in it, and also searches by date, album and place. All the analysis happens on your phone.
+FIND ANY PHOTO
+Search by what is in the photo ("dog", "beach", "food"), by the text that appears in it, by date, album and place. All the analysis happens on your phone.
 
 A GALLERY THAT TIDIES ITSELF
 • Pinch to go from a whole year to a single day.

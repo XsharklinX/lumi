@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -28,7 +29,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -141,8 +141,9 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
     var vignette by remember { mutableFloatStateOf(0f) }
     var fade by remember { mutableFloatStateOf(0f) }
     var hue by remember { mutableFloatStateOf(0f) }
-    // Mientras se mantiene pulsado "Ver original" se enseña la foto sin luz, color ni efectos.
-    var comparing by remember { mutableStateOf(false) }
+    // Antes y después: null si no se compara; si no, por dónde va la barra, de 0 (izquierda) a 1.
+    // A su izquierda se ve la foto original y a su derecha, con los cambios.
+    var split by remember { mutableStateOf<Float?>(null) }
     var saveMenu by remember { mutableStateOf(false) }
     val tone = remember(brightness, contrast, saturation, warmth, look, fade, hue) {
         toneMatrix(brightness, contrast, saturation, warmth, look, fade, hue)
@@ -224,6 +225,11 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                                 detectDragGestures(
                                     onDragStart = { point ->
                                         val f = frame()
+                                        // Mientras se compara, arrastrar mueve la barra y no el recorte.
+                                        if (split != null) {
+                                            grab = Grab.NONE
+                                            return@detectDragGestures
+                                        }
                                         val box = Rect(
                                             f.left + crop.left * f.width, f.top + crop.top * f.height,
                                             f.left + crop.right * f.width, f.top + crop.bottom * f.height,
@@ -244,6 +250,10 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                                 ) { change, drag ->
                                     change.consume()
                                     val f = frame()
+                                    split?.let { at ->
+                                        split = (at + drag.x / f.width).coerceIn(0f, 1f)
+                                        return@detectDragGestures
+                                    }
                                     crop = dragCrop(crop, grab, drag.x / f.width, drag.y / f.height, aspect.ratio?.let { lockedHeight(1f, it) })
                                 }
                             },
@@ -262,22 +272,42 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                                     image,
                                     dstOffset = IntOffset((f.center.x - drawnW / 2).roundToInt(), (f.center.y - drawnH / 2).roundToInt()),
                                     dstSize = IntSize(drawnW.roundToInt(), drawnH.roundToInt()),
-                                    colorFilter = if (toned && !comparing) ColorFilter.colorMatrix(ColorMatrix(tone)) else null,
+                                    colorFilter = if (toned) ColorFilter.colorMatrix(ColorMatrix(tone)) else null,
                                 )
+                            }
+                        }
+                        // La mitad "antes": la misma foto, sin luz ni color, hasta la barra.
+                        val cut = split?.let { f.left + f.width * it }
+                        if (cut != null) {
+                            clipRect(f.left, f.top, cut, f.bottom) {
+                                withTransform({
+                                    rotate(quarter * 90f + angle, f.center)
+                                    scale(coverScale(angle, frameW, frameH), f.center)
+                                    if (flip) scale(-1f, 1f, f.center)
+                                }) {
+                                    drawImage(
+                                        image,
+                                        dstOffset = IntOffset((f.center.x - drawnW / 2).roundToInt(), (f.center.y - drawnH / 2).roundToInt()),
+                                        dstSize = IntSize(drawnW.roundToInt(), drawnH.roundToInt()),
+                                    )
+                                }
                             }
                         }
                         val box = Rect(
                             f.left + crop.left * f.width, f.top + crop.top * f.height,
                             f.left + crop.right * f.width, f.top + crop.bottom * f.height,
                         )
-                        if (vignette > 0f && !comparing) {
-                            drawRect(
-                                Brush.radialGradient(
-                                    0.5f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.8f * vignette),
-                                    center = box.center, radius = hypot(box.width, box.height) / 2,
-                                ),
-                                box.topLeft, box.size,
-                            )
+                        if (vignette > 0f) {
+                            // Al comparar, la viñeta solo oscurece el lado "después".
+                            clipRect(maxOf(cut ?: box.left, box.left), box.top, box.right, box.bottom) {
+                                drawRect(
+                                    Brush.radialGradient(
+                                        0.5f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.8f * vignette),
+                                        center = box.center, radius = hypot(box.width, box.height) / 2,
+                                    ),
+                                    box.topLeft, box.size,
+                                )
+                            }
                         }
                         val shade = Color.Black.copy(alpha = 0.6f)
                         drawRect(shade, f.topLeft, Size(f.width, box.top - f.top))
@@ -293,6 +323,18 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                         drawRect(Color.White, box.topLeft, box.size, style = Stroke(1.5.dp.toPx()))
                         listOf(box.topLeft, box.topRight, box.bottomLeft, box.bottomRight).forEach {
                             drawCircle(Lumi.Accent, 8.dp.toPx(), it)
+                        }
+                        if (cut != null) {
+                            drawLine(Color.White, Offset(cut, f.top), Offset(cut, f.bottom), 2.dp.toPx())
+                            drawCircle(Color.White, 13.dp.toPx(), Offset(cut, f.center.y))
+                            drawCircle(Lumi.Accent, 5.dp.toPx(), Offset(cut, f.center.y))
+                        }
+                    }
+                    if (split != null) {
+                        Row(Modifier.align(Alignment.TopCenter).fillMaxWidth().padding(horizontal = 36.dp, vertical = 6.dp)) {
+                            Text("Antes", style = LabelStyle, color = Color.White, modifier = Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.6f)).padding(horizontal = 10.dp, vertical = 4.dp))
+                            Spacer(Modifier.weight(1f))
+                            Text("Después", style = LabelStyle, color = Color.White, modifier = Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.6f)).padding(horizontal = 10.dp, vertical = 4.dp))
                         }
                     }
                 }
@@ -329,23 +371,18 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                 }
             }
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Un toque corrige luz y color según lo clara u oscura que sea la foto; después se puede afinar a mano.
+                Chip("Auto", false) {
+                    source?.let { bmp ->
+                        val auto = autoLevels(bmp)
+                        brightness = auto[0]
+                        contrast = auto[1]
+                        saturation = auto[2]
+                        tab = 1
+                    }
+                }
                 listOf("Recortar", "Luz y color", "Filtros", "Efectos").forEachIndexed { i, label -> Chip(label, tab == i) { tab = i } }
-                Text(
-                    "Ver original",
-                    style = LabelStyle,
-                    color = if (comparing) Lumi.OnAccent else Lumi.Accent,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .background(if (comparing) Lumi.Accent else Color.Transparent)
-                        .pointerInput(Unit) {
-                            detectTapGestures(onPress = {
-                                comparing = true
-                                tryAwaitRelease()
-                                comparing = false
-                            })
-                        }
-                        .padding(horizontal = 14.dp, vertical = 11.dp),
-                )
+                Chip("Antes y después", split != null) { split = if (split == null) 0.5f else null }
                 Text(
                     "Deshacer todo",
                     style = LabelStyle,
@@ -369,6 +406,35 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
             }
         }
     }
+}
+
+/**
+ * Brillo, contraste y color que le convienen a [bitmap], en la misma escala que los controles
+ * (de -1 a 1). Mira cómo se reparte la luz: si la foto no llega ni al negro ni al blanco, sube el
+ * contraste hasta que llegue; si queda oscura o quemada en conjunto, la acerca al gris medio.
+ */
+private fun autoLevels(bitmap: Bitmap): FloatArray {
+    val histogram = IntArray(256)
+    val steps = 64
+    for (y in 0 until steps) for (x in 0 until steps) {
+        val p = bitmap.getPixel((x * 2 + 1) * bitmap.width / (steps * 2), (y * 2 + 1) * bitmap.height / (steps * 2))
+        histogram[((p shr 16 and 0xFF) * 299 + (p shr 8 and 0xFF) * 587 + (p and 0xFF) * 114) / 1000]++
+    }
+    val total = steps * steps
+    // Se ignora el 1 % más oscuro y el 1 % más claro: un reflejo o una sombra no cuentan.
+    var low = 0
+    var seen = 0
+    while (low < 255 && seen + histogram[low] < total / 100) seen += histogram[low++]
+    var high = 255
+    seen = 0
+    while (high > low && seen + histogram[high] < total / 100) seen += histogram[high--]
+    val mean = histogram.indices.sumOf { it * histogram[it] }.toFloat() / total
+
+    val scale = (235f / (high - low).coerceAtLeast(1)).coerceIn(1f, 1.45f)
+    // Así queda la media después de estirar el contraste alrededor del gris.
+    val stretched = scale * (mean - 127.5f) + 127.5f
+    val shift = ((122f - stretched) * 0.6f).coerceIn(-36f, 36f)
+    return floatArrayOf(shift / 80f, (scale - 1f) / 0.6f, 0.12f)
 }
 
 /** Cerca del centro el control se queda en cero, para poder volver al valor original sin afinar. */

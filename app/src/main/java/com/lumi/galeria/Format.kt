@@ -6,10 +6,16 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-private val ES = Locale("es", "ES")
-private val DAY_FORMAT = DateTimeFormatter.ofPattern("EEEE d 'de' MMMM", ES)
-private val MONTH_FORMAT = DateTimeFormatter.ofPattern("MMMM", ES)
-private val TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm", ES)
+private val SPANISH = Locale("es", "ES")
+/** Idioma en el que se escriben fechas y números: el de la app. */
+private val ES: Locale get() = if (Lang.english) Locale.US else SPANISH
+private val DAY_ES = DateTimeFormatter.ofPattern("EEEE d 'de' MMMM", SPANISH)
+private val DAY_EN = DateTimeFormatter.ofPattern("EEEE, MMMM d", Locale.US)
+private val MONTH_ES = DateTimeFormatter.ofPattern("MMMM", SPANISH)
+private val MONTH_EN = DateTimeFormatter.ofPattern("MMMM", Locale.US)
+private val DAY_FORMAT: DateTimeFormatter get() = if (Lang.english) DAY_EN else DAY_ES
+private val MONTH_FORMAT: DateTimeFormatter get() = if (Lang.english) MONTH_EN else MONTH_ES
+private val TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm", SPANISH)
 
 private fun String.capitalized() = replaceFirstChar { it.titlecase(ES) }
 
@@ -20,9 +26,9 @@ fun groupTitle(day: LocalDate, level: Level, today: LocalDate): String = when (l
 }
 
 fun dayTitle(day: LocalDate, today: LocalDate = LocalDate.now()): String = when {
-    day == today -> "Hoy"
-    day == today.minusDays(1) -> "Ayer"
-    else -> DAY_FORMAT.format(day).capitalized() + if (day.year != today.year) " de ${day.year}" else ""
+    day == today -> tr("Hoy")
+    day == today.minusDays(1) -> tr("Ayer")
+    else -> DAY_FORMAT.format(day).capitalized() + if (day.year == today.year) "" else if (Lang.english) ", ${day.year}" else " de ${day.year}"
 }
 
 fun dayTitle(millis: Long): String =
@@ -50,4 +56,24 @@ fun formatDuration(millis: Long): String {
 }
 
 fun countText(n: Int, one: String, many: String): String =
-    if (n == 1) "1 $one" else String.format(ES, "%,d %s", n, many)
+    if (n == 1) "1 ${tr(one)}" else String.format(ES, "%,d %s", n, tr(many))
+
+/** Hace cuánto fue [millis], en pocas palabras: "hoy", "ayer", "hace 5 días" o el mes. */
+fun agoText(millis: Long): String {
+    val day = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate()
+    val today = LocalDate.now()
+    val days = java.time.temporal.ChronoUnit.DAYS.between(day, today)
+    return when {
+        days <= 0 -> tr("hoy")
+        days == 1L -> tr("ayer")
+        days < 30 -> if (Lang.english) "$days days ago" else "hace $days días"
+        else -> MONTH_FORMAT.format(day) + (if (Lang.english) " " else " de ") + day.year
+    }
+}
+
+/** "Agosto de 2025". */
+fun monthTitle(month: java.time.YearMonth): String =
+    MONTH_FORMAT.format(month.atDay(1)).capitalized() + (if (Lang.english) " " else " de ") + month.year
+
+/** Un número con su separador de miles, en el idioma de la app. */
+fun formatCount(n: Int): String = String.format(ES, "%,d", n)

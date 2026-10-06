@@ -20,8 +20,8 @@ android {
         // Android 11: la papelera del sistema (createTrashRequest) existe desde aquí.
         minSdk = 30
         targetSdk = 36
-        versionCode = 600
-        versionName = "0.6.0"
+        versionCode = 800
+        versionName = "0.8.0"
         // Los modelos de reconocimiento traen código nativo por arquitectura. En Google Play cada
         // teléfono descarga solo la suya; x86_64 es para el emulador.
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
@@ -73,10 +73,6 @@ android {
         compose = true
         buildConfig = true
     }
-    // Los modelos ya vienen comprimidos por dentro: volver a comprimirlos solo hace más lenta la carga.
-    androidResources {
-        noCompress += "onnx"
-    }
 }
 
 dependencies {
@@ -96,13 +92,17 @@ dependencies {
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
+    // Volver a comprimir vídeos para que ocupen menos.
+    implementation("androidx.media3:media3-transformer:1.4.1")
+    implementation("androidx.media3:media3-effect:1.4.1")
     implementation("androidx.biometric:biometric:1.1.0")
     implementation("androidx.documentfile:documentfile:1.0.1")
-    // Modelos incluidos en la app: leen texto y reconocen cosas sin conexión.
-    implementation("com.google.mlkit:text-recognition:16.0.1")
-    implementation("com.google.mlkit:image-labeling:17.0.9")
-    // Motor que ejecuta el modelo de búsqueda por significado, incluido en la app.
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.19.2")
-    // Separa a la persona u objeto del fondo. El modelo lo descarga Google Play la primera vez.
+    testImplementation("junit:junit:4.13.2")
+    // Instala el perfil de arranque (src/main/baseline-prof.txt) también cuando la app no llega por Google Play.
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
+    // Leer texto, reconocer cosas y separar el fondo. Los modelos no van dentro de la app: los
+    // descarga Google Play en el teléfono y el análisis se hace igualmente en el dispositivo.
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
+    implementation("com.google.android.gms:play-services-mlkit-image-labeling:16.0.8")
     implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
 }

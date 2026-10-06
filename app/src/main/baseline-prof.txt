@@ -1,0 +1,5 @@
+# Perfil de arranque. Le dice a Android que compile el código de Lumi al instalar la app,
+# en vez de interpretarlo durante los primeros días de uso. Las bibliotecas (Compose,
+# Coil, Media3) traen ya su propio perfil.
+HSPLcom/lumi/galeria/**->**(**)**
+Lcom/lumi/galeria/**;

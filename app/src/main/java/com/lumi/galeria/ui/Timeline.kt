@@ -1,8 +1,12 @@
 package com.lumi.galeria.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
@@ -30,7 +34,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -38,11 +41,17 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -55,6 +64,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lumi.galeria.Cell
+import com.lumi.galeria.DayColumns
 import com.lumi.galeria.Level
 import com.lumi.galeria.LumiViewModel
 import com.lumi.galeria.Screen
@@ -66,16 +76,24 @@ import com.lumi.galeria.UiState
 import com.lumi.galeria.countText
 import com.lumi.galeria.data.MediaItem
 import com.lumi.galeria.data.Memory
+import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: LazyGridState, link: GridLink) {
     val level = state.level
+    // En la vista de día las columnas las elige el usuario pellizcando.
+    val columns = if (level == Level.DAY) state.dayColumns else level.columns
+    val thumb = if (level == Level.DAY) (if (columns <= 3) 512 else 320) else level.thumb
     val cells = state.cells[level].orEmpty()
     val pick = state.pick
     val haptic = LocalHapticFeedback.current
     var selection by remember { mutableStateOf(emptySet<Long>()) }
     // Foto que debe seguir a la vista al cambiar de nivel, para no perder el sitio.
     var anchor by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    var calendar by remember { mutableStateOf(false) }
+    val stories = remember(state.memory, state.autoAlbums, state.items, state.favorites) { storiesOf(state) }
     val container = remember { arrayOfNulls<LayoutCoordinates>(1) }
 
     fun changeLevel(next: Level) {
@@ -83,6 +101,27 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
         val first = grid.firstVisibleItemIndex
         anchor = (first until minOf(first + 8, cells.size)).firstNotNullOfOrNull { (cells[it] as? Cell.Photo)?.key }
         vm.setLevel(next)
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+    }
+
+    /**
+     * Pellizcar acerca o aleja: de año a mes y a día, y dentro del día cambia cuántas columnas
+     * hay. Al llegar al máximo de columnas, alejar más vuelve a la vista de mes.
+     */
+    fun zoom(closer: Boolean) {
+        when {
+            level == Level.DAY && closer -> {
+                if (state.dayColumns <= DayColumns.first) return
+                vm.setDayColumns(state.dayColumns - 1)
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            }
+            level == Level.DAY && state.dayColumns < DayColumns.last -> {
+                vm.setDayColumns(state.dayColumns + 1)
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            }
+            closer -> changeLevel(Level.entries[minOf(level.ordinal + 1, Level.entries.lastIndex)])
+            else -> changeLevel(Level.entries[maxOf(level.ordinal - 1, 0)])
+        }
     }
 
     LaunchedEffect(level) {
@@ -98,15 +137,15 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
         link.reveal = { id ->
             val index = cells.indexOfFirst { it is Cell.Photo && it.item.id == id }
             if (index >= 0 && grid.layoutInfo.visibleItemsInfo.none { it.index == index }) {
-                grid.scrollToItem(maxOf(index - level.columns * 2, 0))
+                grid.scrollToItem(maxOf(index - columns * 2, 0))
             }
         }
     }
 
     BackHandler(selection.isNotEmpty()) { selection = emptySet() }
 
-    val zoomIn by rememberUpdatedState<() -> Unit>({ changeLevel(Level.entries[minOf(level.ordinal + 1, Level.entries.lastIndex)]) })
-    val zoomOut by rememberUpdatedState<() -> Unit>({ changeLevel(Level.entries[maxOf(level.ordinal - 1, 0)]) })
+    val zoomIn by rememberUpdatedState<() -> Unit>({ zoom(closer = true) })
+    val zoomOut by rememberUpdatedState<() -> Unit>({ zoom(closer = false) })
     val currentCells by rememberUpdatedState(cells)
     val currentSelection by rememberUpdatedState(selection)
     val canSelect by rememberUpdatedState(pick == null || pick.multiple)
@@ -130,14 +169,37 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
     }
 
-    var peek by remember { mutableStateOf<MediaItem?>(null) }
-
     val header by remember(cells) {
         derivedStateOf { headerAt(grid.firstVisibleItemIndex) ?: cells.firstOrNull { it is Cell.Header } as? Cell.Header }
     }
     val firstHeader = if (cells.firstOrNull() is Cell.Recall) 1 else 0
     val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     val barHeight = (if (state.partial && pick == null) 184.dp else 112.dp) + (if (pick == null) 46.dp else 0.dp)
+
+    // La cabecera se retira al bajar por las fotos y vuelve en cuanto se sube un poco. Arriba
+    // del todo, y mientras otra app espera a que se elija una foto, está siempre.
+    var barWanted by remember { mutableStateOf(true) }
+    val scrolling = remember {
+        object : NestedScrollConnection {
+            var travelled = 0f
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if ((available.y > 0f) != (travelled > 0f)) travelled = 0f
+                travelled += available.y
+                if (travelled < -90f) barWanted = false else if (travelled > 60f) barWanted = true
+                return Offset.Zero
+            }
+        }
+    }
+    val atTop by remember { derivedStateOf { grid.firstVisibleItemIndex == 0 && grid.firstVisibleItemScrollOffset < 60 } }
+    val barShown = barWanted || atTop || pick != null
+    val barHidden by animateFloatAsState(if (barShown) 0f else 1f, tween(220), label = "cabecera")
+    // Con la cabecera retirada, una etiqueta dice por dónde se va; se apaga sola al parar.
+    val moving = grid.isScrollInProgress
+    val dateShown by animateFloatAsState(
+        if (!barShown && moving) 1f else 0f,
+        tween(if (moving) 120 else 500, delayMillis = if (moving) 0 else 1400),
+        label = "fecha",
+    )
 
     Box(Modifier.fillMaxSize().background(Lumi.Bg)) {
         when {
@@ -148,7 +210,7 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                 EmptyMessage("Nada con este filtro", "Toca «Todo» para volver a ver la biblioteca completa.")
             }
             else -> LazyVerticalGrid(
-                columns = GridCells.Fixed(level.columns),
+                columns = GridCells.Fixed(columns),
                 state = grid,
                 contentPadding = PaddingValues(start = 2.dp, end = 2.dp, top = top + barHeight, bottom = 130.dp),
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -156,6 +218,7 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                 modifier = Modifier
                     .fillMaxSize()
                     .onGloballyPositioned { container[0] = it }
+                    .nestedScroll(scrolling)
                     .pointerInput(Unit) {
                         awaitEachGesture {
                             var zoom = 1f
@@ -185,7 +248,6 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                             if (next.size != currentSelection.size) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                             selection = next
                         },
-                        onPeek = { id -> peek = id?.let { wanted -> (currentCells.firstOrNull { it is Cell.Photo && it.item.id == wanted } as? Cell.Photo)?.item } },
                     ),
             ) {
                 itemsIndexed(
@@ -195,8 +257,8 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                     contentType = { _, cell -> cell::class },
                 ) { index, cell ->
                     when (cell) {
-                        is Cell.Recall -> if (pick == null) {
-                            RecallCard(cell.memory) { vm.open(Screen.Items(cell.memory.title, Source.Auto("recuerdo"))) }
+                        is Cell.Recall -> if (pick == null && stories.isNotEmpty()) {
+                            StoryRow(stories) { vm.open(it.open) }
                         }
                         // El primer grupo ya se lee en el título grande de arriba.
                         is Cell.Header -> if (index > firstHeader) {
@@ -213,16 +275,19 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                             val item = cell.item
                             PhotoTile(
                                 item = item,
-                                px = level.thumb,
+                                px = thumb,
                                 stackSize = cell.stackSize,
                                 favorite = item.id in state.favorites,
                                 selected = if (selection.isEmpty()) null else item.id in selection,
                                 badges = level != Level.YEAR,
-                                corner = if (level == Level.DAY) 10.dp else 4.dp,
+                                corner = if (level == Level.DAY && columns <= 3) 10.dp else 4.dp,
+                                tone = state.index[item.id]?.color ?: 0,
                                 modifier = Modifier.aspectRatio(1f).clickable {
                                     when {
-                                        selection.isNotEmpty() ->
+                                        selection.isNotEmpty() -> {
+                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                             selection = if (item.id in selection) selection - item.id else selection + item.id
+                                        }
                                         pick != null -> when {
                                             item.isVideo && !pick.videos -> vm.say("Aquí solo se pueden elegir fotos")
                                             !item.isVideo && !pick.images -> vm.say("Aquí solo se pueden elegir vídeos")
@@ -247,9 +312,38 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
             modifier = Modifier.fillMaxSize().padding(top = top + barHeight, bottom = 110.dp).navigationBarsPadding(),
         )
 
+        // Con la cabecera retirada las fotos llegan hasta arriba: un velo deja leer la hora y la batería.
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .graphicsLayer { alpha = barHidden }
+                .background(Brush.verticalGradient(listOf(Lumi.Bg.copy(alpha = 0.75f), Color.Transparent)))
+                .statusBarsPadding()
+                .padding(bottom = 14.dp),
+        )
+        if (dateShown > 0.01f) {
+            Text(
+                header?.title.orEmpty(),
+                style = HeadingStyle.copy(fontSize = 15.sp),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 8.dp)
+                    .graphicsLayer { alpha = dateShown }
+                    .clip(CircleShape)
+                    .background(Lumi.Bg.copy(alpha = 0.86f))
+                    .clickable { barWanted = true }
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
+
         Column(
             Modifier
                 .fillMaxWidth()
+                .graphicsLayer {
+                    translationY = -size.height * barHidden
+                    alpha = 1f - barHidden
+                }
                 .background(Brush.verticalGradient(0f to Lumi.Bg, 0.75f to Lumi.Bg.copy(alpha = 0.92f), 1f to Color.Transparent))
                 .statusBarsPadding()
                 .padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 20.dp),
@@ -263,14 +357,18 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                         else -> "Elige una foto"
                     },
                     style = TitleStyle, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    // El título grande es el del grupo que se está viendo: tocarlo lo marca entero.
-                    modifier = Modifier.weight(1f).clickable(enabled = pick == null || pick.multiple) {
-                        header?.let { toggleGroup(cells.indexOf(it)) }
+                    // El título grande es el del grupo que se está viendo. Tocarlo abre el calendario
+                    // para saltar a otra fecha; mantenerlo pulsado marca el grupo entero.
+                    modifier = Modifier.weight(1f).combinedClickable(
+                        enabled = pick == null || pick.multiple,
+                        onLongClick = { header?.let { toggleGroup(cells.indexOf(it)) } },
+                    ) {
+                        if (pick == null) calendar = true else header?.let { toggleGroup(cells.indexOf(it)) }
                     },
                 )
                 if (pick == null) {
                     BarIcon(CameraIcon, "Hacer una foto", actions.camera)
-                    BarIcon(Icons.Filled.Search, "Buscar", { vm.open(Screen.Search) })
+                    BarIcon(Icons.Filled.Search, "Buscar", { vm.openSearch() })
                     BarIcon(Icons.Filled.Settings, "Ajustes", { vm.open(Screen.Settings) })
                 }
             }
@@ -337,7 +435,23 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                 else -> SelectionBar(state.tiles.filter { it.id in selection }, state, vm, actions) { selection = emptySet() }
             }
         }
-        peek?.let { PeekOverlay(it) }
+    }
+
+    if (calendar) {
+        val zone = java.time.ZoneId.systemDefault()
+        fun dayOf(item: MediaItem) = java.time.Instant.ofEpochMilli(item.date).atZone(zone).toLocalDate()
+        // Se abre por el mes de la primera foto que hay en pantalla.
+        val seen = (grid.firstVisibleItemIndex until cells.size).firstNotNullOfOrNull { (cells[it] as? Cell.Photo)?.item }
+        CalendarSheet(
+            tiles = state.tiles,
+            start = seen?.let(::dayOf) ?: java.time.LocalDate.now(),
+            onPick = { day ->
+                calendar = false
+                val index = cells.indexOfFirst { it is Cell.Photo && dayOf(it.item) == day }
+                if (index >= 0) scope.launch { grid.scrollToItem(if (index > 0 && cells[index - 1] is Cell.Header) index - 1 else index) }
+            },
+            onDismiss = { calendar = false },
+        )
     }
 }
 

@@ -191,3 +191,58 @@ fun deleteRequest(context: Context, items: List<MediaItem>): IntentSender =
 /** Permiso para modificar archivos que creó otra app; hace falta para moverlos de álbum. */
 fun writeRequest(context: Context, items: List<MediaItem>): IntentSender =
     MediaStore.createWriteRequest(context.contentResolver, items.map { it.uri }).intentSender
+
+// ---------- Lo último que se vio ----------
+
+private const val SNAPSHOT_VERSION = 1
+
+/**
+ * Guarda la lista de fotos tal como quedó, para pintarla nada más abrir la app la próxima vez,
+ * antes de preguntarle al teléfono qué hay. Solo datos de la lista (nombre, fecha, tamaño…);
+ * las imágenes no se copian.
+ */
+fun saveSnapshot(context: Context, items: List<MediaItem>) {
+    val temp = java.io.File(context.filesDir, "biblioteca.tmp")
+    runCatching {
+        java.io.DataOutputStream(temp.outputStream().buffered(1 shl 16)).use { out ->
+            out.writeInt(SNAPSHOT_VERSION)
+            out.writeInt(items.size)
+            for (item in items) {
+                out.writeLong(item.id)
+                out.writeBoolean(item.isVideo)
+                out.writeUTF(item.name.take(200))
+                out.writeLong(item.date)
+                out.writeLong(item.modified)
+                out.writeLong(item.size)
+                out.writeInt(item.width)
+                out.writeInt(item.height)
+                out.writeLong(item.duration)
+                out.writeLong(item.bucketId)
+                out.writeUTF(item.bucket.take(200))
+                out.writeUTF(item.path.take(400))
+                out.writeBoolean(item.onCard)
+            }
+        }
+        temp.renameTo(java.io.File(context.filesDir, "biblioteca.bin"))
+    }
+}
+
+/** La lista guardada por [saveSnapshot]; null si no hay o no se puede leer. */
+fun readSnapshot(context: Context): List<MediaItem>? = runCatching {
+    val file = java.io.File(context.filesDir, "biblioteca.bin")
+    if (!file.exists()) return null
+    java.io.DataInputStream(file.inputStream().buffered(1 shl 16)).use { input ->
+        if (input.readInt() != SNAPSHOT_VERSION) return null
+        val count = input.readInt()
+        val items = ArrayList<MediaItem>(count)
+        repeat(count) {
+            items += MediaItem(
+                id = input.readLong(), isVideo = input.readBoolean(), name = input.readUTF(), date = input.readLong(),
+                modified = input.readLong(), size = input.readLong(), width = input.readInt(), height = input.readInt(),
+                duration = input.readLong(), bucketId = input.readLong(), bucket = input.readUTF(), path = input.readUTF(),
+                expires = 0, onCard = input.readBoolean(),
+            )
+        }
+        items
+    }
+}.getOrNull()

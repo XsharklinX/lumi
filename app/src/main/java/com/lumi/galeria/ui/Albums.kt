@@ -37,8 +37,6 @@ import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -67,6 +65,8 @@ import com.lumi.galeria.data.AlbumSort
 import com.lumi.galeria.data.isWritableAlbumPath
 import com.lumi.galeria.data.ItemSort
 import com.lumi.galeria.data.MediaItem
+import com.lumi.galeria.agoText
+import com.lumi.galeria.formatCount
 import com.lumi.galeria.dayTitle
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -88,11 +88,74 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
         else actions.unlock { vm.setAlbumLocked(bucketId, !locked) }
     }
 
+    val shown = state.albums.filter { state.showHidden || !it.hidden }
+    val pinned = shown.filter { it.pinned }
+    val rest = shown.filter { !it.pinned }
+    // Fecha de lo último que entró en cada carpeta.
+    val latest = remember(state.items) { HashMap<Long, Long>().apply { state.items.forEach { merge(it.bucketId, it.date, ::maxOf) } } }
+
+    fun openAlbum(album: Album) {
+        if (!album.locked) vm.open(Screen.Album(album.bucketId))
+        else actions.unlock {
+            vm.unlockAlbums()
+            vm.open(Screen.Album(album.bucketId))
+        }
+    }
+
+    // Opciones de un álbum al mantenerlo pulsado.
+    val menu: @Composable (Album) -> Unit = { album ->
+        DropdownMenu(pressed == album.bucketId, { pressed = null }, containerColor = Lumi.Surface) {
+            DropdownMenuItem(
+                { Text(if (album.locked) "Quitar el candado" else "Bloquear con candado") },
+                {
+                    pressed = null
+                    toggleLock(album.bucketId, album.locked)
+                },
+            )
+            DropdownMenuItem(
+                { Text(if (album.pinned) "Dejar de fijar" else "Fijar arriba") },
+                {
+                    pressed = null
+                    vm.setAlbumPinned(album.bucketId, !album.pinned)
+                },
+            )
+            if (!album.locked) {
+                DropdownMenuItem(
+                    { Text(if (album.hidden) "Dejar de ocultar" else "Ocultar álbum") },
+                    {
+                        pressed = null
+                        vm.setAlbumHidden(album.bucketId, !album.hidden)
+                    },
+                )
+                DropdownMenuItem(
+                    { Text("Cambiar el nombre") },
+                    {
+                        pressed = null
+                        if (isWritableAlbumPath(album.path)) {
+                            renameText = album.name
+                            renaming = album
+                        } else {
+                            vm.say("Android no deja cambiar el nombre de esta carpeta")
+                        }
+                    },
+                )
+                DropdownMenuItem(
+                    { Text("Borrar el álbum", color = Lumi.Danger) },
+                    {
+                        pressed = null
+                        // Sus fotos van a la papelera, donde siguen 30 días.
+                        actions.trash(state.items.filter { it.bucketId == album.bucketId }) {}
+                    },
+                )
+            }
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(Lumi.Bg)) {
         Column {
             // Lupa y tuerca en el mismo sitio que en Fotos.
             ScreenHeader("Álbumes", "") {
-                BarIcon(Icons.Filled.Search, "Buscar", { vm.open(Screen.Search) })
+                BarIcon(Icons.Filled.Search, "Buscar", { vm.openSearch() })
                 BarIcon(Icons.Filled.Settings, "Ajustes", { vm.open(Screen.Settings) })
             }
             Row(Modifier.padding(start = 12.dp, end = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -109,7 +172,7 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                 columns = GridCells.Fixed(2),
                 contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 130.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 // Dos accesos fijos: favoritas y carpeta privada.
                 item(key = "accesos", span = { GridItemSpan(maxLineSpan) }) {
@@ -127,94 +190,56 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                     }
                 }
 
-                if (trips.isNotEmpty()) {
-                    item(key = "t-viajes", span = { GridItemSpan(maxLineSpan) }) { SectionTitle("Viajes") }
-                    items(trips, key = { it.key }) { album ->
-                        AlbumCard(album.title, "${album.subtitle} · ${album.items.size}", album.items.first(), null) {
-                            vm.open(Screen.Items(album.title, Source.Auto(album.key)))
-                        }
-                    }
-                }
-                if (things.isNotEmpty()) {
-                    item(key = "t-cosas", span = { GridItemSpan(maxLineSpan) }) { SectionTitle("Cosas") }
-                    items(things, key = { it.key }) { album ->
-                        AlbumCard(album.title, countText(album.items.size, "foto", "fotos"), album.items.first(), null) {
-                            vm.open(Screen.Items(album.title, Source.Auto(album.key)))
-                        }
-                    }
-                }
-                item(key = "t-carpetas", span = { GridItemSpan(maxLineSpan) }) {
-                    Column {
-                        SectionTitle("Carpetas")
-                        Text("Mantén pulsado un álbum para bloquearlo u ocultarlo.", style = SmallStyle, modifier = Modifier.padding(start = 6.dp, top = 2.dp))
-                    }
-                }
-                items(state.albums.filter { state.showHidden || !it.hidden }, key = { it.bucketId }) { album ->
+                // Los fijados van arriba y en grande, junto a los dos accesos.
+                items(pinned, key = { it.bucketId }) { album ->
                     Box {
                         if (album.locked) {
-                            LockedAlbumCard(
-                                album.name,
-                                onClick = {
-                                    actions.unlock {
-                                        vm.unlockAlbums()
-                                        vm.open(Screen.Album(album.bucketId))
-                                    }
-                                },
-                                onLongClick = { pressed = album.bucketId },
-                            )
+                            LockedAlbumCard(album.name, onClick = { openAlbum(album) }, onLongClick = { pressed = album.bucketId })
                         } else {
                             AlbumCard(
                                 album.name,
-                                countText(album.count, "elemento", "elementos") + (if (album.pinned) " · fijado" else "") + if (album.hidden) " · oculto" else "",
+                                countText(album.count, "elemento", "elementos") + if (album.hidden) " · oculto" else "",
                                 album.cover, null,
                                 onLongClick = { pressed = album.bucketId },
-                            ) { vm.open(Screen.Album(album.bucketId)) }
+                            ) { openAlbum(album) }
                         }
-                        DropdownMenu(pressed == album.bucketId, { pressed = null }, containerColor = Lumi.Surface) {
-                            DropdownMenuItem(
-                                { Text(if (album.locked) "Quitar el candado" else "Bloquear con candado") },
-                                {
-                                    pressed = null
-                                    toggleLock(album.bucketId, album.locked)
-                                },
-                            )
-                            DropdownMenuItem(
-                                { Text(if (album.pinned) "Dejar de fijar" else "Fijar arriba") },
-                                {
-                                    pressed = null
-                                    vm.setAlbumPinned(album.bucketId, !album.pinned)
-                                },
-                            )
-                            if (!album.locked) {
-                                DropdownMenuItem(
-                                    { Text(if (album.hidden) "Dejar de ocultar" else "Ocultar álbum") },
-                                    {
-                                        pressed = null
-                                        vm.setAlbumHidden(album.bucketId, !album.hidden)
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    { Text("Cambiar el nombre") },
-                                    {
-                                        pressed = null
-                                        if (isWritableAlbumPath(album.path)) {
-                                            renameText = album.name
-                                            renaming = album
-                                        } else {
-                                            vm.say("Android no deja cambiar el nombre de esta carpeta")
-                                        }
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    { Text("Borrar el álbum", color = Lumi.Danger) },
-                                    {
-                                        pressed = null
-                                        // Sus fotos van a la papelera, donde siguen 30 días.
-                                        actions.trash(state.items.filter { it.bucketId == album.bucketId }) {}
-                                    },
-                                )
-                            }
+                        menu(album)
+                    }
+                }
+
+                // El resto, en una lista compacta: se lee de arriba abajo sin recorrer portadas.
+                if (rest.isNotEmpty()) {
+                    item(key = "t-carpetas", span = { GridItemSpan(maxLineSpan) }) {
+                        Column {
+                            SectionTitle("Tus carpetas")
+                            Text("Mantén pulsada una para fijarla arriba, bloquearla u ocultarla.", style = SmallStyle, modifier = Modifier.padding(start = 6.dp, top = 2.dp))
                         }
+                    }
+                    items(rest, key = { it.bucketId }, span = { GridItemSpan(maxLineSpan) }) { album ->
+                        Box {
+                            AlbumRow(
+                                name = album.name,
+                                // Un álbum con candado no dice ni cuántas fotos guarda.
+                                subtitle = if (album.locked) "Con candado" else
+                                    formatCount(album.count) +
+                                        (latest[album.bucketId]?.let { " · " + agoText(it) } ?: "") + if (album.hidden) " · oculto" else "",
+                                cover = if (album.locked) null else album.cover,
+                                onLongClick = { pressed = album.bucketId },
+                            ) { openAlbum(album) }
+                            menu(album)
+                        }
+                    }
+                }
+
+                if (trips.isNotEmpty() || things.isNotEmpty()) {
+                    item(key = "t-lumi", span = { GridItemSpan(maxLineSpan) }) { SectionTitle("Hechos por Lumi") }
+                    items(trips + things, key = { it.key }, span = { GridItemSpan(maxLineSpan) }) { album ->
+                        AlbumRow(
+                            name = album.title,
+                            subtitle = formatCount(album.items.size) + if (album.subtitle.isNotEmpty()) " · ${album.subtitle}" else "",
+                            cover = album.items.first(),
+                            onLongClick = null,
+                        ) { vm.open(Screen.Items(album.title, Source.Auto(album.key))) }
                     }
                 }
             }
@@ -273,6 +298,26 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                 Text("Cancelar", style = LabelStyle, color = Lumi.Muted, modifier = Modifier.clip(CircleShape).clickable { creating = false }.padding(12.dp))
             },
         )
+    }
+}
+
+/** Un álbum en la lista compacta: miniatura, nombre y una línea con lo que hay dentro. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AlbumRow(name: String, subtitle: String, cover: MediaItem?, onLongClick: (() -> Unit)?, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).combinedClickable(onClick = onClick, onLongClick = onLongClick).padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(Modifier.size(56.dp).clip(RoundedCornerShape(14.dp)).background(Lumi.Surface), contentAlignment = Alignment.Center) {
+            if (cover != null) MediaThumb(cover, 160, Modifier.fillMaxSize())
+            else Icon(Icons.Filled.Lock, "Bloqueado", Modifier.size(24.dp), tint = Lumi.Accent)
+        }
+        Column(Modifier.weight(1f)) {
+            Text(name, style = HeadingStyle.copy(fontSize = 15.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(subtitle, style = SmallStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
 }
 
@@ -520,9 +565,11 @@ private fun ItemsScreen(
                                 item = item,
                                 px = 320,
                                 favorite = source != Source.Favorites && item.id in state.favorites,
+                                tone = state.index[item.id]?.color ?: 0,
                                 selected = if (selection.isEmpty()) null else item.id in selection,
                                 modifier = Modifier.aspectRatio(1f).clickable {
                                     if (selection.isNotEmpty()) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                         selection = if (item.id in selection) selection - item.id else selection + item.id
                                     } else {
                                         vm.open(Screen.Viewer(source, item.id, link.boundsOf(item.id)))

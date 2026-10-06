@@ -39,12 +39,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Text
+import com.lumi.galeria.ui.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -108,7 +111,8 @@ class MainActivity : FragmentActivity() {
         if (savedInstanceState == null) handle(intent)
         setContent {
             val state by vm.state.collectAsStateWithLifecycle()
-            LumiTheme(state.theme) {
+            Lang.apply(state.language)
+            LumiTheme(state.theme, state.accent, state.pureBlack) {
                 Box {
                     LumiRoot(vm, state)
                     // La huella sirve de atajo para no teclear el PIN propio.
@@ -183,9 +187,9 @@ class MainActivity : FragmentActivity() {
         prompt.authenticate(
             BiometricPrompt.PromptInfo.Builder()
                 .setTitle("Lumi Gallery")
-                .setSubtitle(if (biometricOnly) "Usa tu huella o tu cara" else "Usa tu huella, tu cara o el bloqueo del teléfono")
+                .setSubtitle(tr(if (biometricOnly) "Usa tu huella o tu cara" else "Usa tu huella, tu cara o el bloqueo del teléfono"))
                 .setAllowedAuthenticators(allowed)
-                .apply { if (biometricOnly) setNegativeButtonText("Usar el PIN") }
+                .apply { if (biometricOnly) setNegativeButtonText(tr("Usar el PIN")) }
                 .build(),
         )
     }
@@ -295,7 +299,7 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
                 val intent = Intent(Intent.ACTION_ATTACH_DATA)
                     .setDataAndType(item.uri, "image/*")
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                runCatching { context.startActivity(Intent.createChooser(intent, "Usar como")) }
+                runCatching { context.startActivity(Intent.createChooser(intent, tr("Usar como"))) }
             },
             requestAccess = { permissionLauncher.launch(mediaPermissions()) },
             openSettings = {
@@ -377,6 +381,7 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
                 is Screen.Markup -> MarkupScreen(base, state, vm)
                 is Screen.Trim -> TrimScreen(base, state, vm)
                 is Screen.Collage -> CollageScreen(base, state, vm)
+                is Screen.Pdf -> com.lumi.galeria.ui.PdfScreen(base, state, vm)
                 is Screen.Compare -> CompareScreen(base, state, vm, actions)
                 is Screen.Cutout -> CutoutScreen(base, state, vm)
                 Screen.HiddenFolders -> HiddenFoldersScreen(state, vm, actions)
@@ -456,24 +461,62 @@ private fun LockScreen(onUnlock: () -> Unit) {
     }
 }
 
+/**
+ * Lo primero que ve quien instala la app, antes del aviso de permisos de Android: una sola
+ * pantalla que dice para qué se pide el acceso y qué no hace Lumi con las fotos.
+ */
 @Composable
 private fun PermissionScreen(onGrant: () -> Unit, onSettings: () -> Unit) {
     Column(
-        Modifier.fillMaxSize().background(Lumi.Bg).safeDrawingPadding().padding(28.dp),
+        Modifier
+            .fillMaxSize()
+            .background(Lumi.Bg)
+            .safeDrawingPadding()
+            .verticalScroll(androidx.compose.foundation.rememberScrollState())
+            .padding(horizontal = 24.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
     ) {
-        Box(
-            Modifier.size(56.dp).clip(RoundedCornerShape(18.dp)).background(androidx.compose.ui.graphics.Color(0xFF5B3DF5)),
-            contentAlignment = Alignment.Center,
+        // Fotos de muestra que vienen con la app: todavía no se puede enseñar ninguna del teléfono.
+        androidx.compose.foundation.layout.Row(
+            Modifier.fillMaxWidth().padding(bottom = 22.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Box(Modifier.size(20.dp).clip(CircleShape).background(androidx.compose.ui.graphics.Color.White))
+            listOf(R.drawable.welcome_1, R.drawable.welcome_2, R.drawable.welcome_3).forEachIndexed { index, picture ->
+                androidx.compose.foundation.Image(
+                    painter = androidx.compose.ui.res.painterResource(picture),
+                    contentDescription = null,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(top = if (index == 1) 18.dp else 0.dp)
+                        .aspectRatio(0.75f)
+                        .clip(RoundedCornerShape(20.dp)),
+                )
+            }
         }
-        Text("Tus fotos, bonitas y a mano.", style = TitleStyle.copy(fontSize = 38.sp, lineHeight = 40.sp))
+        Text("Tus fotos se quedan en tu teléfono", style = TitleStyle.copy(fontSize = 32.sp, lineHeight = 35.sp))
         Text(
-            "Lumi necesita permiso para ver las fotos y los vídeos de tu teléfono. No tiene acceso a internet: nada sale de aquí.",
+            "Lumi necesita verlas para enseñártelas, ordenarlas y dejarte buscarlas. Nada más.",
             style = SmallStyle.copy(fontSize = 16.sp, lineHeight = 23.sp),
         )
-        PillButton("Dar acceso a mis fotos", onGrant, Modifier.fillMaxWidth().padding(top = 10.dp))
+        Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            listOf(
+                "Sin permiso de internet: nada sale de aquí",
+                "Sin cuenta, sin anuncios y sin suscripción",
+                "Candado con huella o PIN, si lo quieres",
+            ).forEach { fact ->
+                androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(Modifier.size(22.dp).clip(CircleShape).background(Lumi.Accent), contentAlignment = Alignment.Center) {
+                        androidx.compose.material3.Icon(
+                            androidx.compose.material.icons.Icons.Filled.Check, null,
+                            Modifier.size(14.dp), tint = Lumi.OnAccent,
+                        )
+                    }
+                    Text(fact, style = LabelStyle.copy(fontSize = 15.sp))
+                }
+            }
+        }
+        PillButton("Dar acceso a mis fotos", onGrant, Modifier.fillMaxWidth().padding(top = 14.dp))
         Text(
             "Si ya lo rechazaste, ábrelo desde los ajustes",
             style = SmallStyle.copy(fontSize = 13.sp),

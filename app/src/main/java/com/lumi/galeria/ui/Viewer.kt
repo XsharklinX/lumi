@@ -41,6 +41,14 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.draw.alpha
+import androidx.compose.foundation.border
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -56,11 +64,9 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -171,6 +177,7 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
     val stack = if (screen.source == Source.Timeline) state.stackByBest[current.id] else null
 
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     var tint by remember { mutableStateOf(DefaultTint) }
     LaunchedEffect(current.id) { tint = withContext(Dispatchers.IO) { tintOf(context, current) } }
@@ -183,6 +190,8 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
     var foundText by remember { mutableStateOf<String?>(null) }
     // true = mover, false = copiar, null = cerrado
     var moving by remember { mutableStateOf<Boolean?>(null) }
+    // Vídeo que se está pasando a una copia más ligera.
+    var shrinking by remember { mutableStateOf<MediaItem?>(null) }
 
     // --- Abrir desde la miniatura, cerrar hacia ella y arrastrar hacia abajo ---
     val open = remember { Animatable(0f) }
@@ -331,11 +340,24 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
             .fillMaxSize()
             .onSizeChanged { box = it }
             .pointerInput(Unit) {
+                // Lo que el dedo ha subido en este gesto: hacia abajo se cierra, hacia arriba salen los detalles.
+                var lifted = 0f
                 detectVerticalDragGestures(
-                    onDragEnd = { if (dragY.value > size.height * 0.14f) close() else scope.launch { dragY.animateTo(0f) } },
+                    onDragStart = { lifted = 0f },
+                    onDragEnd = {
+                        when {
+                            dragY.value > size.height * 0.14f -> close()
+                            lifted > size.height * 0.09f && dragY.value == 0f -> {
+                                more = true
+                                scope.launch { dragY.animateTo(0f) }
+                            }
+                            else -> scope.launch { dragY.animateTo(0f) }
+                        }
+                    },
                     onDragCancel = { scope.launch { dragY.animateTo(0f) } },
                 ) { change, amount ->
                     change.consume()
+                    lifted -= amount
                     scope.launch { dragY.snapTo((dragY.value + amount).coerceAtLeast(0f)) }
                 }
             },
@@ -495,6 +517,11 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                             }
                             if (!current.isExternal) PlayerChip("Recortar", false, accent) { leaveTo(Screen.Trim(current.id)) }
                         }
+                    } else if (items.size > 1) {
+                        Filmstrip(items, pager.currentPage.coerceIn(0, items.lastIndex)) { index ->
+                            // Un salto corto se ve pasar; uno largo va directo.
+                            scope.launch { if (abs(index - pager.currentPage) <= 3) pager.animateScrollToPage(index) else pager.scrollToPage(index) }
+                        }
                     } else {
                         Spacer(Modifier.height(10.dp))
                     }
@@ -505,14 +532,17 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                                 ActionChip(Icons.Filled.Share, "Enviar", Modifier.weight(1f), accent) { actions.share(listOf(current)) }
                             }
                         } else {
+                            ActionChip(Icons.Filled.Share, "Enviar", Modifier.weight(1f), accent) { actions.share(listOf(current)) }
                             ActionChip(
                                 if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, "Favorita",
                                 Modifier.weight(1f), accent, filled = isFavorite,
-                            ) { vm.toggleFavorite(listOf(current.id)) }
+                            ) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                vm.toggleFavorite(listOf(current.id))
+                            }
                             if (!current.isVideo) {
                                 ActionChip(Icons.Filled.Edit, "Editar", Modifier.weight(1f), accent) { leaveTo(Screen.Editor(current.id)) }
                             }
-                            ActionChip(Icons.Filled.Share, "Enviar", Modifier.weight(1f), accent) { actions.share(listOf(current)) }
                             ActionChip(Icons.Filled.Delete, "Borrar", Modifier.weight(1f), accent) { actions.trash(listOf(current)) {} }
                             ActionChip(Icons.Filled.MoreVert, "Más", Modifier.weight(1f), accent) { more = true }
                         }
@@ -607,8 +637,14 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                 vm.readText(current) { foundText = it }
             },
             onCutout = { more = false; leaveTo(Screen.Cutout(current.id)) },
+            onShrink = {
+                more = false
+                player.pause()
+                shrinking = current
+            },
         )
     }
+    shrinking?.let { video -> ShrinkSheet(video, vm) { shrinking = null } }
     moving?.let { move ->
         val chosen = listOf(current)
         AlbumPickerSheet(
@@ -620,6 +656,39 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
             },
             onDismiss = { moving = null },
         )
+    }
+}
+
+/**
+ * Tira de miniaturas bajo la foto: enseña las vecinas y deja saltar varias de golpe sin volver
+ * a la cuadrícula. La que se está viendo queda siempre en el centro.
+ */
+@Composable
+private fun Filmstrip(items: List<MediaItem>, page: Int, onPick: (Int) -> Unit) {
+    val strip = rememberLazyListState(initialFirstVisibleItemIndex = page)
+    LaunchedEffect(page) { strip.animateScrollToItem(page) }
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp)) {
+        LazyRow(
+            state = strip,
+            // Con este margen, la miniatura que queda la primera cae justo en el centro.
+            contentPadding = PaddingValues(horizontal = (maxWidth - 40.dp) / 2),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+        ) {
+            items(items.size, key = { items[it].id }) { index ->
+                val on = index == page
+                val shape = RoundedCornerShape(8.dp)
+                MediaThumb(
+                    items[index], 160,
+                    Modifier
+                        .size(width = if (on) 40.dp else 32.dp, height = if (on) 54.dp else 44.dp)
+                        .clip(shape)
+                        .then(if (on) Modifier.border(2.dp, Color.White, shape) else Modifier.alpha(0.7f))
+                        .clickable { onPick(index) },
+                )
+            }
+        }
     }
 }
 
@@ -830,6 +899,7 @@ private fun MoreSheet(
     onMarkup: () -> Unit,
     onText: () -> Unit,
     onCutout: () -> Unit,
+    onShrink: () -> Unit,
 ) {
     val context = LocalContext.current
     // Lo que anotó la cámara se lee al abrir los detalles, no antes.
@@ -863,6 +933,7 @@ private fun MoreSheet(
                 if (!item.isVideo) SheetAction("Dibujar o escribir encima", "Se guarda en una copia", onMarkup)
                 if (!item.isVideo) SheetAction("Copiar el texto de la foto", "Lee lo que hay escrito para pegarlo donde quieras", onText)
                 if (!item.isVideo) SheetAction("Quitar el fondo", "Deja solo a la persona u objeto principal", onCutout)
+                if (item.isVideo && !item.isExternal) SheetAction("Reducir el peso", "Guarda una copia que ocupa menos; el original no se toca", onShrink)
                 SheetAction("Usar como portada del álbum", null, onCover)
                 SheetAction("Cambiar el nombre", null) { renaming = true }
                 if (!item.isVideo) {

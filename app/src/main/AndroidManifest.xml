@@ -28,6 +28,11 @@
         android:largeHeap="true"
         android:supportsRtl="true"
         android:theme="@style/Theme.Lumi">
+
+        <!-- Google Play descarga estos modelos junto con la app, en vez de la primera vez que se usan. -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="ocr,ica,subject_segment" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
