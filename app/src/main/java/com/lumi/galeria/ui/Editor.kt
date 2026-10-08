@@ -186,7 +186,7 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
     val preview = remember(source) {
         source?.let { s ->
             val longSide = maxOf(s.width, s.height)
-            if (longSide <= 1400) s else Bitmap.createScaledBitmap(s, s.width * 1400 / longSide, s.height * 1400 / longSide, true)
+            if (longSide <= 2048) s else Bitmap.createScaledBitmap(s, s.width * 2048 / longSide, s.height * 2048 / longSide, true)
         }
     }
     // Curvas, tonos por gama, sombras y luces, nitidez, ruido y grano: se calculan píxel a píxel.
@@ -398,6 +398,7 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                                     image,
                                     dstOffset = IntOffset((f.center.x - drawnW / 2).roundToInt(), (f.center.y - drawnH / 2).roundToInt()),
                                     dstSize = IntSize(drawnW.roundToInt(), drawnH.roundToInt()),
+                                filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
                                     colorFilter = if (toned) ColorFilter.colorMatrix(ColorMatrix(tone)) else null,
                                 )
                             }
@@ -415,6 +416,7 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                                         original ?: image,
                                         dstOffset = IntOffset((f.center.x - drawnW / 2).roundToInt(), (f.center.y - drawnH / 2).roundToInt()),
                                         dstSize = IntSize(drawnW.roundToInt(), drawnH.roundToInt()),
+                                filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
                                     )
                                 }
                             }
@@ -478,6 +480,7 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                                                 image,
                                                 dstOffset = IntOffset((f.center.x - drawnW / 2).roundToInt(), (f.center.y - drawnH / 2).roundToInt()),
                                                 dstSize = IntSize(drawnW.roundToInt(), drawnH.roundToInt()),
+                                filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
                                                 colorFilter = if (toned) ColorFilter.colorMatrix(ColorMatrix(tone)) else null,
                                             )
                                         }

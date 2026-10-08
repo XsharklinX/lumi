@@ -173,9 +173,9 @@ class Story(val title: String, val cover: MediaItem, val count: Int, val open: S
  */
 fun storiesOf(state: UiState): List<Story> {
     val out = ArrayList<Story>()
-    state.memory?.let { out += Story(it.title, it.items.first(), it.items.size, Screen.Items(it.title, Source.Auto("recuerdo")), it.items.map { m -> m.id }) }
+    state.memory?.let { out += Story(it.title, it.cover, it.items.size, Screen.Items(it.title, Source.Auto("recuerdo")), it.items.map { m -> m.id }) }
     state.autoAlbums.firstOrNull { it.isTrip }?.let { trip ->
-        out += Story(trip.title, trip.items.first(), trip.items.size, Screen.Items(trip.title, Source.Auto(trip.key)), trip.items.map { it.id })
+        out += Story(trip.title, trip.cover, trip.items.size, Screen.Items(trip.title, Source.Auto(trip.key)), trip.items.map { it.id })
     }
     // De diciembre a febrero, el resumen del año que acaba o acaba de terminar.
     val today = LocalDate.now()
@@ -200,7 +200,7 @@ fun storiesOf(state: UiState): List<Story> {
         byMonth.entries.filter { it.value.size >= 3 }.maxByOrNull { it.key }?.let { (month, items) ->
             val name = groupTitle(month.atDay(1), Level.MONTH, today)
             val title = if (com.lumi.galeria.Lang.english) "Best of $name" else "Lo mejor de " + name.replaceFirstChar { it.lowercase() }
-            out += Story(title, items.first(), items.size, Screen.Items(title, Source.Ids(items.mapTo(HashSet()) { it.id })), items.map { it.id })
+            out += Story(title, state.coverOf(items), items.size, Screen.Items(title, Source.Ids(items.mapTo(HashSet()) { it.id })), items.map { it.id })
         }
     }
     return out
@@ -232,3 +232,7 @@ fun StoryRow(stories: List<Story>, onOpen: (Story) -> Unit) {
         }
     }
 }
+
+/** La mejor portada para [items]: nítida, con caras, nunca un documento ni una captura. */
+fun UiState.coverOf(items: List<MediaItem>): MediaItem =
+    com.lumi.galeria.data.pickCover(items, favorites, index, faceScore, showcaseOut)

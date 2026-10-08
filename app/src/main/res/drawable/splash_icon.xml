@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Arranque: la loma entra desde abajo y el sol aparece encima. Android 12 o posterior lo anima. -->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt">
+    <aapt:attr name="android:drawable">
+        <vector
+            android:width="108dp"
+            android:height="108dp"
+            android:viewportWidth="108"
+            android:viewportHeight="108">
+            <group
+                android:name="hill"
+                android:translateY="0">
+                <path
+                    android:fillColor="#B9A8FF"
+                    android:pathData="M20,78 C32,60 44,59 54,70 C62,79 72,62 88,58 V90 H20 Z" />
+            </group>
+            <group
+                android:name="sun"
+                android:pivotX="60"
+                android:pivotY="41"
+                android:scaleX="1"
+                android:scaleY="1">
+                <path
+                    android:fillColor="#FFFFFF"
+                    android:pathData="M60,41m-11,0a11,11 0,1 1,22 0a11,11 0,1 1,-22 0" />
+            </group>
+        </vector>
+    </aapt:attr>
+    <target android:name="hill">
+        <aapt:attr name="android:animation">
+            <objectAnimator
+                android:duration="420"
+                android:interpolator="@android:interpolator/decelerate_cubic"
+                android:propertyName="translateY"
+                android:valueFrom="16"
+                android:valueTo="0" />
+        </aapt:attr>
+    </target>
+    <target android:name="sun">
+        <aapt:attr name="android:animation">
+            <set>
+                <objectAnimator
+                    android:duration="520"
+                    android:interpolator="@android:interpolator/overshoot"
+                    android:propertyName="scaleX"
+                    android:startOffset="160"
+                    android:valueFrom="0"
+                    android:valueTo="1" />
+                <objectAnimator
+                    android:duration="520"
+                    android:interpolator="@android:interpolator/overshoot"
+                    android:propertyName="scaleY"
+                    android:startOffset="160"
+                    android:valueFrom="0"
+                    android:valueTo="1" />
+            </set>
+        </aapt:attr>
+    </target>
+</animated-vector>

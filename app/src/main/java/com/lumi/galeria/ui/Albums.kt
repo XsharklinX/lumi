@@ -89,6 +89,10 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
     var pressed by remember { mutableStateOf<Long?>(null) }
     var renaming by remember { mutableStateOf<Album?>(null) }
     var renameText by remember { mutableStateOf("") }
+    // Carpetas de álbumes: a cuál se mete uno, y la que se mantuvo pulsada.
+    var folderFor by remember { mutableStateOf<Album?>(null) }
+    var pressedFolder by remember { mutableStateOf<Long?>(null) }
+    var renamingFolder by remember { mutableStateOf<com.lumi.galeria.AlbumFolder?>(null) }
 
     /** Poner o quitar el candado siempre pasa por la contraseña. */
     fun toggleLock(bucketId: Long, locked: Boolean) {
@@ -96,7 +100,8 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
         else actions.unlock { vm.setAlbumLocked(bucketId, !locked) }
     }
 
-    val shown = state.albums.filter { state.showHidden || !it.hidden }
+    val inFolders = vm.albumFolders.flatMapTo(HashSet()) { it.albums }
+    val shown = state.albums.filter { (state.showHidden || !it.hidden) && it.bucketId !in inFolders }
     val pinned = shown.filter { it.pinned }
     val rest = shown.filter { !it.pinned }
     // Fecha de lo último que entró en cada carpeta.
@@ -145,6 +150,13 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                     },
                 )
                 DropdownMenuItem(
+                    { Text("Meter en una carpeta") },
+                    {
+                        pressed = null
+                        folderFor = album
+                    },
+                )
+                DropdownMenuItem(
                     { Text("Cambiar el nombre") },
                     {
                         pressed = null
@@ -180,7 +192,7 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                 QuickAccess("Favoritas", countText(favorites.size, "foto", "fotos"), Icons.Filled.Favorite, favorites.firstOrNull(), Modifier.weight(1f)) {
                     vm.open(Screen.Favorites)
                 }
-                QuickAccess("Escáner", "Documentos", Icons.Filled.Edit, null, Modifier.weight(1f)) { scanDocument() }
+                QuickAccess("Documentos", "Escaneos y PDF", Icons.Filled.Edit, null, Modifier.weight(1f)) { vm.switchTab(Screen.Documents) }
                 QuickAccess("Privada", "Con tu huella", Icons.Filled.Lock, null, Modifier.weight(1f)) { vm.openVault(actions.unlock) }
             }
             Row(Modifier.padding(start = 12.dp, end = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -202,7 +214,7 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 // Lo que arma Lumi va en una fila que se desliza de lado, para no alargar la pantalla.
-                if (state.facesOn && state.people.isNotEmpty()) {
+                if (state.people.isNotEmpty() || (state.facesOn && state.facesLooked < state.facesTotal)) {
                     item(key = "personas", span = { GridItemSpan(maxLineSpan) }) { PeopleRow(state, vm) }
                 }
                 val reviewYear = defaultReviewYear(state.items)
@@ -227,7 +239,7 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                                     LumiAlbumCard(
                                         album.title,
                                         formatCount(album.items.size) + if (album.subtitle.isNotEmpty()) " · ${album.subtitle}" else "",
-                                        album.items.first(),
+                                        album.cover,
                                     ) { vm.open(Screen.Items(album.title, Source.Auto(album.key))) }
                                 }
                             }
@@ -236,8 +248,18 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                 }
                 item(key = "t-carpetas", span = { GridItemSpan(maxLineSpan) }) {
                     Column {
-                        SectionTitle("Tus carpetas")
-                        Text("Mantén pulsada una para fijarla arriba, bloquearla u ocultarla.", style = SmallStyle, modifier = Modifier.padding(start = 6.dp, top = 2.dp))
+                        SectionTitle("Tus álbumes")
+                        Text("Mantén pulsado uno para fijarlo arriba, bloquearlo, ocultarlo o meterlo en una carpeta.", style = SmallStyle, modifier = Modifier.padding(start = 6.dp, top = 2.dp))
+                    }
+                }
+                items(vm.albumFolders, key = { "carpeta-${it.id}" }) { folder ->
+                    val inside = folder.albums.mapNotNull { id -> state.albums.firstOrNull { it.bucketId == id } }
+                    Box {
+                        FolderTile(folder, inside, onLongClick = { pressedFolder = folder.id }) { vm.open(Screen.AlbumFolder(folder.id)) }
+                        DropdownMenu(pressedFolder == folder.id, { pressedFolder = null }, containerColor = Lumi.Surface) {
+                            DropdownMenuItem({ Text("Cambiar el nombre") }, { pressedFolder = null; renamingFolder = folder })
+                            DropdownMenuItem({ Text("Deshacer la carpeta") }, { pressedFolder = null; vm.deleteFolder(folder.id) })
+                        }
                     }
                 }
                 items(pinned + rest, key = { it.bucketId }) { album ->
@@ -257,7 +279,15 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                 }
             }
         }
-        if (!LocalWide.current) Dock(Screen.Albums, vm::switchTab, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 14.dp))
+        if (!LocalWide.current) Dock(Screen.Albums, vm::switchTab, Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 14.dp), onCamera = actions.camera, onScan = scanDocument)
+    }
+
+    folderFor?.let { album -> FolderPickerSheet(vm, album) { folderFor = null } }
+    renamingFolder?.let { folder ->
+        FolderNameDialog("Cambiar el nombre", folder.name, onDismiss = { renamingFolder = null }) { name ->
+            renamingFolder = null
+            vm.renameFolder(folder.id, name)
+        }
     }
 
     renaming?.let { album ->
@@ -527,6 +557,7 @@ fun FavoritesScreen(state: UiState, vm: LumiViewModel, actions: Actions, link: G
         title = "Favoritas",
         emptyTitle = "Aún no tienes favoritas",
         emptyText = "Toca el corazón al ver una foto y la tendrás siempre aquí.",
+        emptyIcon = HeartIcon,
         items = items, source = Source.Favorites, state = state, vm = vm, actions = actions, link = link,
     )
 }
@@ -596,6 +627,8 @@ internal fun ItemsScreen(
     title: String,
     emptyTitle: String,
     emptyText: String,
+    /** Dibujo de la pantalla vacía. */
+    emptyIcon: androidx.compose.ui.graphics.vector.ImageVector = PictureIcon,
     items: List<MediaItem>,
     source: Source,
     state: UiState,
@@ -639,7 +672,7 @@ internal fun ItemsScreen(
                 extra?.invoke()
             }
             if (items.isEmpty()) {
-                EmptyMessage(emptyTitle, emptyText)
+                EmptyMessage(emptyTitle, emptyText, icon = emptyIcon)
             } else {
                 Box {
                     LazyVerticalGrid(

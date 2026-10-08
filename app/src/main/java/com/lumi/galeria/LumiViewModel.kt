@@ -1,5 +1,7 @@
 package com.lumi.galeria
 
+import androidx.compose.runtime.mutableIntStateOf
+import kotlinx.coroutines.sync.withLock
 import com.lumi.galeria.data.restoreName
 import com.lumi.galeria.data.restorePaths
 import com.lumi.galeria.data.copyToCard
@@ -184,8 +186,65 @@ sealed interface Screen {
     /** Todas las personas que ha agrupado Lumi. */
     data object People : Screen
 
-    /** Las fotos de una persona. [key] es su nombre o, si aún no tiene, la marca de su grupo. */
+    /** Las fotos de una persona. [key] es la marca de su grupo («g12»). */
     data class Person(val key: String) : Screen
+
+    /** «¿Son la misma persona?», de pareja en pareja. */
+    data object MergePeople : Screen
+
+    /** «¿Es Lucía?»: las caras dudosas de una persona, una a una. */
+    data class Doubts(val key: String) : Screen
+
+    /** Un grupo de personas (Familia, Amigos…) como álbum. */
+    data class Circle(val name: String) : Screen
+
+    /** Cómo ha crecido: su cara a lo largo del tiempo, en un GIF. */
+    data class Growing(val key: String) : Screen
+
+    /** Pestaña Documentos: escaneos y PDF. */
+    data object Documents : Screen
+
+    /** Un PDF, página a página. */
+    data class DocView(val uri: String) : Screen
+
+    /** Guardar un escaneo recién hecho: nombre propuesto y tipo. */
+    data object SaveDoc : Screen
+
+    /** Las dos caras de un DNI o una tarjeta en una página. */
+    data object IdCard : Screen
+
+    /** Editar las páginas de un PDF ([uri] vacío: uno nuevo). */
+    data class PdfEdit(val uri: String) : Screen
+
+    /** Dibujar la firma o las iniciales. */
+    data class Signature(val initials: Boolean) : Screen
+
+    /** Firmar un PDF ([pdf]) o una foto. */
+    data class SignDoc(val uri: String, val pdf: Boolean, val photoId: Long = -1) : Screen
+
+    /** La Cámara Lumi. */
+    data object Camera : Screen
+
+    /** Todo lo que puede hacer Lumi. */
+    data object Tour : Screen
+
+    /** Fotos oscuras o apagadas que se pueden mejorar con Lumi Auto. */
+    data object Enhance : Screen
+
+    /** Fotos con datos personales que conviene pasar a la carpeta privada. */
+    data object Sensitive : Screen
+
+    /** Dejar el móvil a alguien para que vea solo [ids]. */
+    data class Show(val ids: List<Long>) : Screen
+
+    /** El fondo de pantalla que cambia solo. */
+    data object AutoWallpaper : Screen
+
+    /** Todos los ajustes de la Cámara Lumi. */
+    data object CameraSettings : Screen
+
+    /** Una carpeta de álbumes hecha en Lumi. */
+    data class AlbumFolder(val id: Long) : Screen
 
     /** Resumen de un año en fotos. */
     data class YearReview(val year: Int) : Screen
@@ -211,6 +270,18 @@ sealed interface Screen {
     data class Cutout(val id: Long) : Screen
     data object HiddenFolders : Screen
 }
+
+/** Cómo se ordenan las personas (las fijadas y las que tienen nombre van siempre antes). */
+enum class PeopleOrder(val label: String) { COUNT("Más fotos"), NAME("Nombre"), RECENT("Recientes") }
+
+/** Cuándo se ve Lumi en blanco en la vista de apps recientes. */
+/** Una carpeta de álbumes hecha en Lumi: un nombre y los álbumes que agrupa. */
+class AlbumFolder(val id: Long, val name: String, val albums: List<Long>)
+
+enum class RecentsHide(val label: String) { NEVER("Nunca"), PRIVATE("Con lo privado abierto"), ALWAYS("Siempre") }
+
+/** Qué cámara abre el botón de cámara. */
+enum class CameraChoice(val label: String) { ASK("Preguntar cada vez"), PHONE("La del teléfono"), LUMI("Cámara Lumi") }
 
 /** Qué se enseña en la pantalla Fotos. */
 enum class TileFilter(val label: String) {
@@ -264,6 +335,12 @@ data class UiState(
     val albums: List<Album> = emptyList(),
     val autoAlbums: List<AutoAlbum> = emptyList(),
     val memory: Memory? = null,
+    /** Lo que no se luce (capturas, papeles, datos personales): fuera de recuerdos, portadas y widgets. */
+    val showcaseOut: Set<Long> = emptySet(),
+    /** Fotos con datos personales: documentos de identidad, tarjetas y contraseñas. */
+    val sensitive: Map<Long, com.lumi.galeria.data.Sensitive> = emptyMap(),
+    /** Foto -> cómo de bien salen las caras. */
+    val faceScore: Map<Long, Float> = emptyMap(),
     val blurry: List<MediaItem> = emptyList(),
     /** Lo que se sabe de cada foto: texto, cosas reconocidas y lugar. */
     val index: Map<Long, IndexEntry> = emptyMap(),
@@ -326,12 +403,17 @@ data class UiState(
     val pureBlack: Boolean = false,
     /** Fotos en las que alguien sale con los ojos cerrados. */
     val closedEyes: Set<Long> = emptySet(),
+    /** Android deja a Lumi borrar y mover sin pedir confirmación cada vez («Gestión de contenido multimedia»). */
+    val manageMedia: Boolean = false,
     /** La vista por días destaca la mejor foto de cada día. */
     val dayHighlights: Boolean = true,
     /** Personas que salen en las fotos, agrupadas por su cara. */
     val people: List<com.lumi.galeria.data.Person> = emptyList(),
-    /** Agrupar caras está activado. */
+    /** Buscar caras está activado (si no, está en pausa; lo encontrado se queda). */
     val facesOn: Boolean = true,
+    /** Minutos que faltan, más o menos, para mirar todas las fotos con gente; 0 si no se sabe. */
+    val facesEta: Int = 0,
+    val peopleOrder: PeopleOrder = PeopleOrder.COUNT,
     /** Fotos ya miradas en busca de caras, de cuántas. */
     val facesLooked: Int = 0,
     val facesTotal: Int = 0,
@@ -345,6 +427,13 @@ data class UiState(
     val vaultItems: List<VaultItem> = emptyList(),
     val backup: BackupState = BackupState(),
 ) {
+    /** Foto -> nombres de las personas que salen en ella. Se calcula solo si se pide (TalkBack). */
+    val namesByPhoto: Map<Long, List<String>> by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        HashMap<Long, MutableList<String>>().apply {
+            people.forEach { person -> person.name?.let { name -> person.photos.forEach { getOrPut(it) { ArrayList() } += name } } }
+        }
+    }
+
     fun itemsFor(source: Source): List<MediaItem> = when (source) {
         Source.Timeline -> tiles
         Source.Favorites -> sortItems(items.filter { it.id in favorites }, itemSort)
@@ -390,9 +479,6 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
     private val analyzer = Analyzer(app)
     private val indexer = Indexer(app)
     private val faceFinder = com.lumi.galeria.data.FaceFinder(app)
-    private var named = com.lumi.galeria.data.PeopleNames.read(app)
-    /** "foto:nombre": esa foto no es de esa persona aunque lo parezca. */
-    private var notThem = prefs.getStringSet(KEY_NOT_THEM, emptySet()).orEmpty().toSet()
     private val backup = Backup(app)
     /** La carpeta privada abierta ahora: la de verdad o la del PIN señuelo. */
     private val vault get() = if (_state.value.vaultDecoy) LumiApp.decoy else LumiApp.vault
@@ -419,6 +505,7 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
             appLock = prefs.getBoolean(KEY_APP_LOCK, false),
             hasDecoy = prefs.getString(KEY_DECOY_HASH, null) != null,
             facesOn = prefs.getBoolean(KEY_FACES, true),
+            peopleOrder = runCatching { PeopleOrder.valueOf(prefs.getString(KEY_PEOPLE_ORDER, null) ?: "COUNT") }.getOrDefault(PeopleOrder.COUNT),
             dayHighlights = prefs.getBoolean(KEY_HIGHLIGHTS, true),
             locked = prefs.getBoolean(KEY_APP_LOCK, false),
         ),
@@ -495,16 +582,25 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
                 indexer.scan(library.active, canReadPlace, deep = false) { publishIndex(library.active) }
             }
             publishIndex(library.active)
-            // Después, las caras: antes que el texto, que es lo más lento y lo que menos se echa en falta.
-            if (_state.value.facesOn) {
-                publishPeople()
-                withContext(Quiet.dispatcher) { faceFinder.scan(visible(library.active)) { publishPeople() } }
+            // Después, las caras: primero las fotos en las que el análisis ya vio gente (de la más
+            // reciente a la más antigua) y, tras leer el texto, el resto.
+            val shown = visible(library.active)
+            withContext(Dispatchers.IO) { faceFinder.prune(shown) }
+            publishPeople()
+            val (withPeople, rest) = withContext(Dispatchers.Default) { faceFinder.pending(shown, _state.value.index) }
+            if (_state.value.facesOn && withPeople.isNotEmpty()) {
+                startFaceClock(shown)
+                withContext(Quiet.dispatcher) { faceFinder.scan(withPeople, { _state.value.facesOn }) { publishPeople() } }
                 publishPeople()
             }
             withContext(Quiet.dispatcher) {
                 indexer.scan(library.active, canReadPlace, deep = true) { publishIndex(library.active) }
             }
             publishIndex(library.active)
+            if (_state.value.facesOn && rest.isNotEmpty()) {
+                withContext(Quiet.dispatcher) { faceFinder.scan(rest, { _state.value.facesOn }) { publishPeople() } }
+                publishPeople()
+            }
             // Ya se sabe lo nítida que es cada foto: la estrella de cada día puede cambiar.
             if (_state.value.dayHighlights) refresh()
         }
@@ -559,7 +655,10 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
                 TileFilter.GIFS -> unstacked.filter { it.isGif }
             }
             // El recuerdo del día solo encabeza la vista completa, no las filtradas.
-            val memory = if (settings.filter == TileFilter.ALL) buildMemory(unstacked) else null
+            val out = settings.showcaseOut
+            val memory = if (settings.filter != TileFilter.ALL) null else buildMemory(unstacked.filter { it.id !in out })?.let { m ->
+                Memory(m.title, m.items, com.lumi.galeria.data.pickCover(m.items, settings.favorites, settings.index, faces, out))
+            }
             UiState(
                 items = items,
                 trashed = trashed,
@@ -572,7 +671,9 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     Level.entries.associateWith { buildCells(ordered, byBest, it, memory, settings.filter == TileFilter.ALL && ordered.isNotEmpty(), if (it == Level.DAY) stars else null) }
                 },
-                albums = buildAlbums(all, lockedAlbums, hiddenAlbums, settings.albumSort, pinnedAlbums, covers, albumOrder),
+                albums = buildAlbums(all, lockedAlbums, hiddenAlbums, settings.albumSort, pinnedAlbums, covers, albumOrder) { list ->
+                    com.lumi.galeria.data.pickCover(list, settings.favorites, settings.index, faces, out)
+                },
                 lockedItems = if (settings.albumsUnlocked) all.filter { it.bucketId in lockedAlbums } else emptyList(),
                 memory = memory,
                 backup = _state.value.backup.copy(
@@ -596,6 +697,7 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
                 backup = if (it.backup.running) it.backup else next.backup,
             )
         }
+        openPending()
         if (withIndex) publishIndex(all)
     }
 
@@ -606,8 +708,23 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
             val index = indexer.snapshot()
             val photos = items.size
             val names = placeNames(items, index)
+            val out = HashSet<Long>()
+            val sensitive = HashMap<Long, com.lumi.galeria.data.Sensitive>()
+            for (item in items) {
+                val entry = index[item.id]
+                if (com.lumi.galeria.data.keepOutOfShowcase(item, entry)) out += item.id
+                if (!item.isVideo) com.lumi.galeria.data.sensitiveKind(entry)?.let { sensitive[item.id] = it }
+            }
+            val favorites = _state.value.favorites
+            val faces = faceScores
             UiState(
-                autoAlbums = buildTrips(items, index) + buildThings(items, index),
+                autoAlbums = (buildTrips(items, index) + buildThings(items, index)).map { album ->
+                    // Papeles y fotos con texto sí llevan uno de ellos de portada: es lo que son.
+                    if (album.key == "cosa:documentos" || album.key == "cosa:texto") album
+                    else album.withCover(com.lumi.galeria.data.pickCover(album.items, favorites, index, faces, out))
+                },
+                showcaseOut = out,
+                sensitive = sensitive,
                 blurry = indexer.blurry(items),
                 duplicateGroups = findDuplicates(items, index),
                 index = index,
@@ -620,8 +737,12 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
                 deepPending = items.count { index[it.id]?.deep != true },
             )
         }
+        val outChanged = next.showcaseOut != _state.value.showcaseOut
+        showcaseOut = next.showcaseOut
         _state.update {
             it.copy(
+                showcaseOut = next.showcaseOut,
+                sensitive = next.sensitive,
                 autoAlbums = next.autoAlbums,
                 blurry = next.blurry,
                 duplicateGroups = next.duplicateGroups,
@@ -635,16 +756,34 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
                 deepPending = next.deepPending,
             )
         }
+        if (outChanged) {
+            // Cambian el recuerdo del día y las portadas; los widgets, el fondo y los avisos lo leen de un archivo.
+            refresh()
+            withContext(Dispatchers.IO) { com.lumi.galeria.data.writeShowcaseOut(getApplication(), next.showcaseOut) }
+            com.lumi.galeria.widget.Widgets.refreshAll(getApplication())
+        }
     }
+
+    /** Copia de [UiState.showcaseOut] a mano para lo que se calcula fuera del estado. */
+    private var showcaseOut: Set<Long> = emptySet()
 
     /** Foto -> cómo de bien salen las caras: sonrisas suman, ojos cerrados restan. Solo fotos con caras. */
     private var faceScores: Map<Long, Float> = emptyMap()
 
-    /** Vuelve a juntar las caras en personas con lo que se sabe ahora. */
+    /** Cuándo empezó la búsqueda de caras en curso y cuántas fotos con gente había ya miradas, para estimar lo que falta. */
+    private var faceStart = 0L
+    private var faceStartLooked = 0
+
+    /** Vuelve a leer las personas con lo que se sabe ahora. Es rápido: no se agrupa nada de nuevo. */
     private suspend fun publishPeople() {
         val all = lastLibrary?.first ?: return
         val items = visible(all)
+        val index = _state.value.index
+        val order = _state.value.peopleOrder
         var blinks: Set<Long> = emptySet()
+        var looked = 0
+        var total = 0
+        var hidden = 0
         val next = withContext(Dispatchers.Default) {
             val alive = items.mapTo(HashSet()) { it.id }
             val faces = faceFinder.snapshot().filter { it.photo in alive }
@@ -653,74 +792,297 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
             faceScores = byPhoto.mapValues { (_, list) ->
                 list.sumOf { f -> ((if (f.smile >= 0f) f.smile else 0.3f) - (if (f.blinking) 1.5f else 0f)).toDouble() }.toFloat() / list.size
             }
-            com.lumi.galeria.data.groupPeople(faces, named, notThem)
+            looked = faceFinder.lookedWithPeople(items, index)
+            total = faceFinder.withPeople(items, index)
+            hidden = faceFinder.hiddenCount()
+            val dates = items.associate { it.id to it.date }
+            sortPeople(faceFinder.people(alive, avoid = showcaseOut), order, dates)
         }
         val blinksChanged = blinks != _state.value.closedEyes
-        _state.update { it.copy(closedEyes = blinks) }
+        // Lo que falta, al ritmo de esta búsqueda.
+        val eta = if (faceStart > 0 && looked > faceStartLooked && total > looked) {
+            val perPhoto = (System.currentTimeMillis() - faceStart) / (looked - faceStartLooked).toFloat()
+            ((total - looked) * perPhoto / 60_000f).toInt() + 1
+        } else 0
+        _state.update {
+            it.copy(closedEyes = blinks, people = next, facesLooked = looked, facesTotal = total, hiddenPeople = hidden, facesEta = eta, faceScore = faceScores)
+        }
+        // Las personas con nombre, para elegirlas en el widget de fotos.
+        withContext(Dispatchers.IO) {
+            com.lumi.galeria.widget.Widgets.writePeople(
+                getApplication(),
+                next.mapNotNull { p -> p.name?.let { name -> com.lumi.galeria.widget.WidgetPerson(p.group.id, name, p.photos.filter { it !in showcaseOut }) } },
+            )
+        }
         // La mejor toma de cada pila y la foto estrella de cada día dependen de las caras.
         if (blinksChanged) refresh()
-        val photos = items.count { !it.isVideo && !it.isScreenshot && !it.isGif }
-        _state.update {
-            it.copy(people = next, facesLooked = faceFinder.lookedAt().coerceAtMost(photos), facesTotal = photos, hiddenPeople = named.filter { n -> n.hidden }.map { n -> n.name }.distinct().size)
-        }
     }
 
+    private fun sortPeople(people: List<com.lumi.galeria.data.Person>, order: PeopleOrder, dates: Map<Long, Long>): List<com.lumi.galeria.data.Person> {
+        val byOrder = when (order) {
+            PeopleOrder.COUNT -> compareByDescending<com.lumi.galeria.data.Person> { it.photos.size }
+            PeopleOrder.NAME -> compareBy<com.lumi.galeria.data.Person> { com.lumi.galeria.data.normalize(it.name ?: "~") }.thenByDescending { it.photos.size }
+            PeopleOrder.RECENT -> compareByDescending<com.lumi.galeria.data.Person> { p -> p.photos.maxOfOrNull { dates[it] ?: 0L } ?: 0L }
+        }
+        // Las fijadas arriba y, después, las que tienen nombre.
+        return people.sortedWith(compareByDescending<com.lumi.galeria.data.Person> { it.pinned }.thenByDescending { it.name != null }.then(byOrder))
+    }
+
+    /** Tras un cambio del usuario: se guarda (ya lo hizo [faceFinder]) y se vuelve a enseñar. */
     private fun peopleChanged() {
-        com.lumi.galeria.data.PeopleNames.write(getApplication(), named)
         viewModelScope.launch { publishPeople() }
     }
 
+    fun facesOf(photo: Long): List<com.lumi.galeria.data.Face> = faceFinder.facesOf(photo)
+
     /**
-     * Pone nombre a [person]. Si ya tenía, se cambia en todos sus grupos. Si otra persona ya se
-     * llama así, las dos pasan a ser la misma: así se juntan dos grupos de alguien.
+     * Pone nombre a [person]. Si otra persona ya se llama así, las dos pasan a ser la misma: así
+     * se junta a alguien que salía en dos grupos.
      */
     fun namePerson(person: com.lumi.galeria.data.Person, name: String) {
         val clean = name.trim().take(40)
         if (clean.isEmpty()) return
-        named = if (person.name != null) {
-            named.map { if (it.name == person.name) com.lumi.galeria.data.Named(clean, it.centroid, it.hidden) else it }
-        } else {
-            named + com.lumi.galeria.data.Named(clean, person.centroid)
-        }
-        if (person.name != null && person.name != clean) {
-            notThem = notThem.map { if (it.endsWith(":" + person.name)) it.substringBefore(':') + ":" + clean else it }.toSet()
-            prefs.edit().putStringSet(KEY_NOT_THEM, notThem).apply()
-        }
-        peopleChanged()
+        val twin = _state.value.people.firstOrNull { it.key != person.key && it.name.equals(clean, ignoreCase = true) }
         val top = backStack.lastOrNull()
-        if (top is Screen.Person && top.key == person.key) replaceTop(Screen.Person(clean))
+        viewModelScope.launch {
+            withContext(Dispatchers.Default) {
+                if (twin != null) {
+                    faceFinder.merge(twin.group.id, person.group.id)
+                } else {
+                    faceFinder.rename(person.group.id, clean)
+                }
+            }
+            publishPeople()
+            if (twin != null) {
+                say("Juntada con ${twin.name}")
+                if (top is Screen.Person && top.key == person.key) replaceTop(Screen.Person(twin.key))
+            }
+        }
     }
 
     /** Deja de enseñar a [person]. Se puede deshacer desde Ajustes. */
     fun hidePerson(person: com.lumi.galeria.data.Person) {
-        val name = person.name ?: ("~" + person.key)
-        named = if (person.name != null) named.map { if (it.name == name) com.lumi.galeria.data.Named(it.name, it.centroid, true) else it }
-        else named + com.lumi.galeria.data.Named(name, person.centroid, hidden = true)
+        faceFinder.setHidden(person.group.id, true)
         peopleChanged()
         if (backStack.lastOrNull() is Screen.Person) back()
         say("Persona oculta. Puedes volver a verla desde Ajustes.")
     }
 
     fun showHiddenPeople() {
-        // Las ocultas sin nombre se olvidan del todo; las que tenían nombre vuelven con él.
-        named = named.filter { !(it.hidden && it.name.startsWith("~")) }.map { com.lumi.galeria.data.Named(it.name, it.centroid, false) }
+        faceFinder.showAllHidden()
         peopleChanged()
     }
 
     /** Estas fotos no son de [person]. */
     fun notThisPerson(person: com.lumi.galeria.data.Person, photos: List<MediaItem>) {
-        val name = person.name ?: return
-        notThem = notThem + photos.map { "${it.id}:$name" }
-        prefs.edit().putStringSet(KEY_NOT_THEM, notThem).apply()
-        peopleChanged()
-        say("Quitadas de $name")
+        viewModelScope.launch {
+            withContext(Dispatchers.Default) { faceFinder.rejectPhotos(person.group.id, photos.map { it.id }) }
+            publishPeople()
+            say("Quitadas de ${person.name ?: "esta persona"}")
+        }
     }
 
-    /** Activa o quita agrupar caras. Al quitarlo se borra todo lo que se sabía de las caras. */
+    /** Respuesta a «¿Son la misma persona?». */
+    fun answerMerge(a: com.lumi.galeria.data.Person, b: com.lumi.galeria.data.Person, same: Boolean) {
+        viewModelScope.launch {
+            withContext(Dispatchers.Default) {
+                if (same) {
+                    // Se queda la que tiene nombre; si ninguna, la que tiene más fotos.
+                    val (into, from) = if (b.name != null && a.name == null || (a.name == null && b.photos.size > a.photos.size)) b to a else a to b
+                    faceFinder.merge(into.group.id, from.group.id)
+                } else {
+                    faceFinder.keepApart(a.group.id, b.group.id)
+                }
+            }
+            publishPeople()
+        }
+    }
+
+    /** Respuesta a «¿Es Lucía?». */
+    fun answerDoubt(doubt: com.lumi.galeria.data.Doubt, yes: Boolean) {
+        viewModelScope.launch {
+            withContext(Dispatchers.Default) {
+                if (yes) faceFinder.confirm(doubt.face, doubt.person.group.id) else faceFinder.reject(doubt.face, doubt.person.group.id)
+            }
+            publishPeople()
+        }
+    }
+
+    suspend fun mergeSuggestions(): List<Pair<com.lumi.galeria.data.Person, com.lumi.galeria.data.Person>> =
+        withContext(Dispatchers.Default) { faceFinder.mergeSuggestions(_state.value.people) }
+
+    suspend fun doubtsOf(person: com.lumi.galeria.data.Person): List<com.lumi.galeria.data.Doubt> =
+        withContext(Dispatchers.Default) { faceFinder.doubts(person) }
+
+    /** La cara [face] de una foto es de [person]. */
+    fun faceIs(face: com.lumi.galeria.data.Face, person: com.lumi.galeria.data.Person) {
+        viewModelScope.launch {
+            withContext(Dispatchers.Default) { faceFinder.confirm(face, person.group.id) }
+            publishPeople()
+            say("Es ${person.name ?: "esa persona"}")
+        }
+    }
+
+    /** La cara [face] es de alguien nuevo, que se llama [name]. */
+    fun faceIsNew(face: com.lumi.galeria.data.Face, name: String) {
+        val clean = name.trim().take(40)
+        if (clean.isEmpty()) return
+        val twin = _state.value.people.firstOrNull { it.name.equals(clean, ignoreCase = true) }
+        if (twin != null) return faceIs(face, twin)
+        viewModelScope.launch {
+            withContext(Dispatchers.Default) {
+                val current = _state.value.people.firstOrNull { it.group.id == face.group }
+                // Si su grupo no tiene nombre, el nombre es para todo el grupo; si lo tiene, es otra persona.
+                if (current != null && current.name == null) faceFinder.rename(face.group, clean) else faceFinder.startPerson(face, clean)
+            }
+            publishPeople()
+        }
+    }
+
+    fun setPersonPinned(person: com.lumi.galeria.data.Person, pinned: Boolean) {
+        faceFinder.setPinned(person.group.id, pinned)
+        peopleChanged()
+    }
+
+    fun setPersonCover(person: com.lumi.galeria.data.Person, face: com.lumi.galeria.data.Face) {
+        faceFinder.setCover(person.group.id, face.key)
+        peopleChanged()
+        say("Portada cambiada")
+    }
+
+    fun setPeopleOrder(order: PeopleOrder) {
+        prefs.edit().putString(KEY_PEOPLE_ORDER, order.name).apply()
+        _state.update { it.copy(peopleOrder = order) }
+        peopleChanged()
+    }
+
+    /** Pausa o sigue la búsqueda de caras. Pausar no borra nada: las personas siguen ahí. */
     fun setFacesOn(on: Boolean) {
         prefs.edit().putBoolean(KEY_FACES, on).apply()
-        _state.update { it.copy(facesOn = on, people = if (on) it.people else emptyList(), facesLooked = if (on) it.facesLooked else 0) }
-        if (on) reload() else viewModelScope.launch(Dispatchers.IO) { faceFinder.clear() }
+        _state.update { it.copy(facesOn = on) }
+        if (on) reload()
+    }
+
+    /** Borra todo lo que se sabe de las caras, nombres incluidos. Solo tras confirmarlo. */
+    fun clearFaces() = viewModelScope.launch {
+        withContext(Dispatchers.IO) { faceFinder.clear() }
+        circles = emptyMap()
+        writeCircles()
+        _state.update { it.copy(people = emptyList(), facesLooked = 0, hiddenPeople = 0, closedEyes = emptySet()) }
+        say("Borrado todo lo de las caras")
+    }
+
+    // --- Grupos de personas: Familia, Amigos… ---
+
+    /** Nombre del grupo -> marcas de las personas que lo forman. */
+    var circles by mutableStateOf(readCircles())
+        private set
+
+    private fun readCircles(): Map<String, Set<String>> = runCatching {
+        val o = org.json.JSONObject(prefs.getString(KEY_CIRCLES, "{}") ?: "{}")
+        o.keys().asSequence().associateWith { key ->
+            val a = o.getJSONArray(key)
+            (0 until a.length()).mapTo(LinkedHashSet()) { a.getString(it) }
+        }
+    }.getOrDefault(emptyMap())
+
+    private fun writeCircles() {
+        val o = org.json.JSONObject()
+        circles.forEach { (name, members) -> o.put(name, org.json.JSONArray(members.toList())) }
+        prefs.edit().putString(KEY_CIRCLES, o.toString()).apply()
+    }
+
+    fun saveCircle(name: String, members: Set<String>, old: String? = null) {
+        val clean = name.trim().take(30)
+        if (clean.isEmpty() || members.isEmpty()) return
+        circles = (if (old != null) circles - old else circles) + (clean to members)
+        writeCircles()
+    }
+
+    fun deleteCircle(name: String) {
+        circles = circles - name
+        writeCircles()
+    }
+
+    /**
+     * Fotogramas de «Cómo ha crecido»: una cara por época (año, o mes si hay pocos años), con la
+     * cara siempre en el mismo sitio y la fecha escrita abajo.
+     */
+    suspend fun growingFrames(person: com.lumi.galeria.data.Person, side: Int = 480): List<Bitmap> = withContext(Dispatchers.IO) {
+        val context = getApplication<Application>()
+        val byId = _state.value.items.associateBy { it.id }
+        val zone = java.time.ZoneId.systemDefault()
+        val faces = person.faces.filter { byId[it.photo] != null && it.right - it.left >= 0.06f }
+        if (faces.isEmpty()) return@withContext emptyList()
+        fun date(face: com.lumi.galeria.data.Face) = java.time.Instant.ofEpochMilli(byId.getValue(face.photo).date).atZone(zone)
+        val years = faces.map { date(it).year }.toSet()
+        val byYear = years.size >= 3
+        val periods = faces.groupBy { if (byYear) date(it).year * 100 else date(it).year * 100 + date(it).monthValue }.toSortedMap()
+        periods.values.take(48).mapNotNull { list ->
+            // De cada época, la cara más grande con los ojos abiertos.
+            val face = list.maxBy { (it.right - it.left) * (if (it.blinking) 0.3f else 1f) * (0.6f + it.smile.coerceAtLeast(0f)) }
+            val item = byId.getValue(face.photo)
+            val source = sharpThumb(context, item.uri, 1000) ?: return@mapNotNull null
+            val w = source.width
+            val h = source.height
+            val cx = (face.left + face.right) / 2 * w
+            val cy = (face.top + face.bottom) / 2 * h
+            val size = maxOf((face.right - face.left) * w, (face.bottom - face.top) * h) * 2.2f
+            val out = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
+            val canvas = android.graphics.Canvas(out)
+            canvas.drawColor(android.graphics.Color.BLACK)
+            val k = side / size
+            val matrix = android.graphics.Matrix().apply {
+                postTranslate(-cx, -cy + size * 0.06f)
+                postScale(k, k)
+                postTranslate(side / 2f, side / 2f)
+            }
+            canvas.drawBitmap(source, matrix, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG or android.graphics.Paint.ANTI_ALIAS_FLAG))
+            source.recycle()
+            val d = date(face)
+            val label = if (byYear) d.year.toString() else monthTitle(java.time.YearMonth.of(d.year, d.monthValue))
+            val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.WHITE
+                textSize = side * 0.07f
+                typeface = android.graphics.Typeface.DEFAULT_BOLD
+                setShadowLayer(side * 0.02f, 0f, 0f, android.graphics.Color.argb(200, 0, 0, 0))
+            }
+            canvas.drawText(label, side * 0.05f, side * 0.94f, paint)
+            out
+        }
+    }
+
+    fun saveGrowing(person: com.lumi.galeria.data.Person, frames: List<Bitmap>, delayCs: Int) {
+        if (making != null) return
+        viewModelScope.launch {
+            making = 0
+            val name = com.lumi.galeria.data.safeFolder(person.name ?: "persona").replace(' ', '_') + "_crece.gif"
+            val ok = runCatching {
+                withContext(Dispatchers.Default) { com.lumi.galeria.data.saveFramesGif(getApplication(), frames, delayCs, name) { making = it } }
+            }.getOrDefault(false)
+            making = null
+            say(if (ok) "GIF guardado en el álbum Lumi" else "No se pudo crear el GIF")
+            if (ok) reload()
+        }
+    }
+
+    /** Lo que se sabe de cuánto falta por mirar, para enseñarlo mientras se buscan caras. */
+    private fun startFaceClock(items: List<MediaItem>) {
+        faceStart = System.currentTimeMillis()
+        faceStartLooked = faceFinder.lookedWithPeople(items, _state.value.index)
+    }
+
+    fun setManageMedia(granted: Boolean) {
+        if (_state.value.manageMedia != granted) _state.update { it.copy(manageMedia = granted) }
+    }
+
+    /** Se ofrece una sola vez, tras el primer borrado, quitar el aviso del sistema. */
+    var offerManageMedia by mutableStateOf(false)
+
+    fun afterTrash() {
+        if (android.os.Build.VERSION.SDK_INT < 31 || _state.value.manageMedia || prefs.getBoolean(KEY_MANAGE_ASKED, false)) return
+        prefs.edit().putBoolean(KEY_MANAGE_ASKED, true).apply()
+        offerManageMedia = true
     }
 
     fun setDayHighlights(on: Boolean) {
@@ -734,7 +1096,7 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
      * nítida. Las capturas y los vídeos no compiten.
      */
     private fun beauty(item: MediaItem, favorites: Set<Long>, index: Map<Long, IndexEntry>, faces: Map<Long, Float>): Float {
-        if (item.isScreenshot || item.isVideo || item.isGif) return -10f
+        if (item.isScreenshot || item.isVideo || item.isGif || item.id in showcaseOut) return -10f
         var score = 0f
         if (item.id in favorites) score += 3f
         faces[item.id]?.let { score += 1f + it * 1.5f }
@@ -1113,11 +1475,485 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
         if (ok) reload()
     }
 
-    /** Guarda lo que devolvió el escáner: cada página como foto y, además, todo junto en un PDF. */
-    fun saveScan(pages: List<android.net.Uri>, pdf: android.net.Uri?) = viewModelScope.launch {
-        val saved = withContext(Dispatchers.IO) { saveScanned(getApplication(), pages, pdf) }
-        say(if (saved == 0) "No se pudo guardar el documento" else "Documento guardado en el álbum Documentos y como PDF")
-        if (saved > 0) reload()
+
+    // --- Documentos ---
+
+    /** Los PDF de Lumi, con su tipo y su texto. */
+    var docs by mutableStateOf<List<com.lumi.galeria.data.Doc>>(emptyList())
+        private set
+
+    /** Se están leyendo PDF que aún no se conocían. */
+    var docsReading by mutableStateOf(false)
+        private set
+    private var docsJob: Job? = null
+
+    fun loadDocs() {
+        docsJob?.cancel()
+        docsJob = viewModelScope.launch {
+            val context = getApplication<Application>()
+            // Primero lo que ya se sabe, al instante; después se lee lo nuevo.
+            docs = withContext(Dispatchers.IO) { com.lumi.galeria.data.loadDocs(context, readMissing = false) }
+            if (docs.any { it.pages == 0 }) {
+                docsReading = true
+                docs = withContext(Dispatchers.IO) { com.lumi.galeria.data.loadDocs(context, readMissing = true) }
+                docsReading = false
+            }
+        }
+    }
+
+    /** Un escaneo leído y listo para guardar: las páginas con su texto y un nombre propuesto. */
+    class PendingDoc(val pages: List<com.lumi.galeria.data.DocPage>, val name: String, val kind: com.lumi.galeria.data.DocKind)
+
+    var pendingDoc by mutableStateOf<PendingDoc?>(null)
+
+    /** Páginas que llegan de fuera para añadirse a un PDF que se está editando. */
+    var pagesForEdit by mutableStateOf<List<Uri>>(emptyList())
+
+    /** Lo que devolvió el escáner: se lee el texto de cada página y se propone un nombre antes de guardar. */
+    fun saveScan(pages: List<Uri>, @Suppress("UNUSED_PARAMETER") pdf: Uri?) {
+        if (pages.isEmpty()) return
+        // Si se está editando un PDF, las páginas escaneadas van a él.
+        if (backStack.lastOrNull() is Screen.PdfEdit) {
+            pagesForEdit = pages
+            return
+        }
+        viewModelScope.launch {
+            say("Leyendo el documento…")
+            val context = getApplication<Application>()
+            val made = withContext(Dispatchers.IO) {
+                pages.mapNotNull { uri -> com.lumi.galeria.data.decodeForPdf(context, uri)?.let { com.lumi.galeria.data.DocPage(it, com.lumi.galeria.data.readLines(it)) } }
+            }
+            if (made.isEmpty()) {
+                say("No se pudo leer el escaneo")
+                return@launch
+            }
+            val lines = made.flatMap { it.lines }
+            val kind = com.lumi.galeria.data.docKind(lines.joinToString("\n") { it.text })
+            pendingDoc = PendingDoc(made, com.lumi.galeria.data.suggestDocName(made.first().lines, kind, Lang.english), kind)
+            open(Screen.SaveDoc)
+        }
+    }
+
+    fun savePendingDoc(name: String) {
+        val doc = pendingDoc ?: return
+        if (making != null) return
+        viewModelScope.launch {
+            making = 0
+            val context = getApplication<Application>()
+            val uri = withContext(Dispatchers.IO) {
+                val file = java.io.File(context.cacheDir, "documento.pdf")
+                com.lumi.galeria.data.writePdf(file, doc.pages)
+                com.lumi.galeria.data.publishPdf(context, file, name.ifBlank { doc.name }).also { uri ->
+                    file.delete()
+                    if (uri != null) com.lumi.galeria.data.rememberDoc(context, uri, doc.pages.flatMap { it.lines }.joinToString("\n") { it.text }, doc.kind, doc.pages.size)
+                }
+            }
+            making = null
+            if (uri == null) {
+                say("No se pudo guardar el PDF")
+                return@launch
+            }
+            pendingDoc = null
+            say("Guardado en Documentos")
+            if (backStack.lastOrNull() == Screen.SaveDoc) back()
+            loadDocs()
+        }
+    }
+
+    /** Las dos caras de una tarjeta, escaneadas. */
+    var pendingCard by mutableStateOf<List<Bitmap>>(emptyList())
+
+    fun scanCard(pages: List<Uri>) {
+        viewModelScope.launch {
+            val context = getApplication<Application>()
+            pendingCard = withContext(Dispatchers.IO) { pages.take(2).mapNotNull { com.lumi.galeria.data.decodeForPdf(context, it, 1600) } }
+            if (pendingCard.isEmpty()) say("No se pudo leer la tarjeta") else open(Screen.IdCard)
+        }
+    }
+
+    fun saveCard(page: Bitmap, name: String) {
+        if (making != null) return
+        viewModelScope.launch {
+            making = 0
+            val context = getApplication<Application>()
+            val uri = withContext(Dispatchers.IO) {
+                val file = java.io.File(context.cacheDir, "tarjeta.pdf")
+                com.lumi.galeria.data.writePdf(file, listOf(com.lumi.galeria.data.DocPage(page, emptyList())))
+                com.lumi.galeria.data.publishPdf(context, file, name).also { uri ->
+                    file.delete()
+                    if (uri != null) com.lumi.galeria.data.rememberDoc(context, uri, name, com.lumi.galeria.data.DocKind.IDENTITY, 1)
+                }
+            }
+            making = null
+            say(if (uri != null) "Guardado en Documentos" else "No se pudo guardar")
+            if (uri != null) {
+                pendingCard = emptyList()
+                if (backStack.lastOrNull() == Screen.IdCard) back()
+                loadDocs()
+            }
+        }
+    }
+
+    fun importPdfs(uris: List<Uri>) = viewModelScope.launch {
+        val context = getApplication<Application>()
+        val done = withContext(Dispatchers.IO) { uris.count { com.lumi.galeria.data.importPdf(context, it) != null } }
+        say(if (done == 0) "No se pudo traer el PDF" else countText(done, "PDF añadido a Documentos", "PDF añadidos a Documentos"))
+        loadDocs()
+    }
+
+    fun renameDoc(doc: com.lumi.galeria.data.Doc, name: String) = viewModelScope.launch {
+        val ok = withContext(Dispatchers.IO) { com.lumi.galeria.data.renamePdf(getApplication(), doc.uri, name) }
+        say(if (ok) "Nombre cambiado" else "No se pudo cambiar el nombre")
+        loadDocs()
+    }
+
+    fun deleteDoc(doc: com.lumi.galeria.data.Doc) = viewModelScope.launch {
+        val ok = withContext(Dispatchers.IO) { com.lumi.galeria.data.deletePdf(getApplication(), doc.uri) }
+        say(if (ok) "Documento borrado" else "No se pudo borrar")
+        if (ok && backStack.lastOrNull() is Screen.DocView) back()
+        loadDocs()
+    }
+
+    /** Una página al editar un PDF: de un PDF ([index] ≥ 0) o una imagen ([index] = -1), girada [quarter] cuartos. */
+    data class EditPage(val source: Uri, val index: Int, val quarter: Int = 0)
+
+    /**
+     * Guarda el PDF editado. Cada página se vuelve a dibujar y a leer, para que el texto siga
+     * dentro. Con [target], sustituye ese PDF; si no, crea uno nuevo llamado [name].
+     */
+    fun savePdfEdit(target: Uri?, name: String, pages: List<EditPage>) {
+        if (making != null || pages.isEmpty()) return
+        viewModelScope.launch {
+            making = 0
+            val context = getApplication<Application>()
+            val ok = withContext(Dispatchers.IO) {
+                val made = pages.mapIndexedNotNull { i, page ->
+                    val bmp = (if (page.index >= 0) com.lumi.galeria.data.renderPage(context, page.source, page.index, 1240) else com.lumi.galeria.data.decodeForPdf(context, page.source))
+                        ?.let { com.lumi.galeria.data.turned(it, page.quarter) } ?: return@mapIndexedNotNull null
+                    making = (i + 1) * 90 / pages.size
+                    com.lumi.galeria.data.DocPage(bmp, com.lumi.galeria.data.readLines(bmp))
+                }
+                if (made.isEmpty()) return@withContext false
+                val file = java.io.File(context.cacheDir, "editado.pdf")
+                com.lumi.galeria.data.writePdf(file, made)
+                val text = made.flatMap { it.lines }.joinToString("\n") { it.text }
+                val uri = if (target != null && com.lumi.galeria.data.replacePdf(context, target, file)) target else com.lumi.galeria.data.publishPdf(context, file, name)
+                file.delete()
+                if (uri != null) com.lumi.galeria.data.rememberDoc(context, uri, text, com.lumi.galeria.data.docKind(text), made.size)
+                uri != null
+            }
+            making = null
+            say(if (ok) "PDF guardado" else "No se pudo guardar el PDF")
+            if (ok) {
+                if (backStack.lastOrNull() is Screen.PdfEdit) back()
+                loadDocs()
+            }
+        }
+    }
+
+    /** Guarda páginas ya firmadas como un PDF nuevo. */
+    fun saveSignedPdf(name: String, pages: List<Bitmap>) {
+        if (making != null || pages.isEmpty()) return
+        viewModelScope.launch {
+            making = 0
+            val context = getApplication<Application>()
+            val uri = withContext(Dispatchers.IO) {
+                val made = pages.mapIndexed { i, bmp ->
+                    making = (i + 1) * 90 / pages.size
+                    com.lumi.galeria.data.DocPage(bmp, com.lumi.galeria.data.readLines(bmp))
+                }
+                val file = java.io.File(context.cacheDir, "firmado.pdf")
+                com.lumi.galeria.data.writePdf(file, made)
+                val text = made.flatMap { it.lines }.joinToString("\n") { it.text }
+                com.lumi.galeria.data.publishPdf(context, file, name).also { uri ->
+                    file.delete()
+                    if (uri != null) com.lumi.galeria.data.rememberDoc(context, uri, text, com.lumi.galeria.data.docKind(text), made.size)
+                }
+            }
+            making = null
+            say(if (uri != null) "Documento firmado guardado en Documentos" else "No se pudo guardar")
+            if (uri != null) {
+                if (backStack.lastOrNull() is Screen.SignDoc) back()
+                loadDocs()
+            }
+        }
+    }
+
+    /** Dónde se guarda la firma (o las iniciales). Solo dentro de Lumi: ninguna otra app la ve. */
+    fun signatureFile(initials: Boolean): java.io.File =
+        java.io.File(getApplication<Application>().filesDir, if (initials) "iniciales.png" else "firma.png")
+
+    fun saveSignature(bitmap: Bitmap, initials: Boolean) = viewModelScope.launch(Dispatchers.IO) {
+        runCatching { signatureFile(initials).outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+        withContext(Dispatchers.Main) { say(if (initials) "Iniciales guardadas" else "Firma guardada") }
+    }
+
+    // --- Ajustes de la Cámara Lumi ---
+
+    /** Lumi Auto: aclarar, contraste, color y nitidez al guardar cada foto. */
+    var lumiAuto by mutableStateOf(prefs.getBoolean(KEY_LUMI_AUTO, true))
+        private set
+    /** Guardar además la foto tal como sale del sensor. */
+    var keepOriginal by mutableStateOf(prefs.getBoolean(KEY_KEEP_ORIGINAL, false))
+        private set
+    var shutterSound by mutableStateOf(prefs.getBoolean(KEY_SHUTTER_SOUND, true))
+        private set
+    /** Los selfies salen como en un espejo (como se ven en la pantalla). */
+    var mirrorSelfie by mutableStateOf(prefs.getBoolean(KEY_MIRROR, false))
+        private set
+
+    fun setCameraOption(key: String, on: Boolean) {
+        prefs.edit().putBoolean(key, on).apply()
+        when (key) {
+            KEY_LUMI_AUTO -> lumiAuto = on
+            KEY_KEEP_ORIGINAL -> keepOriginal = on
+            KEY_SHUTTER_SOUND -> shutterSound = on
+            KEY_MIRROR -> mirrorSelfie = on
+        }
+    }
+
+    /** Lo que hacen las teclas de volumen mientras está abierta la Cámara Lumi ([up]: la de subir); null fuera de ella. */
+    var volumeKey: ((up: Boolean) -> Unit)? = null
+
+    /** Ajustes de la Cámara Lumi. */
+    val camPrefs = com.lumi.galeria.data.CameraPrefs(app)
+
+    /** Fotos de la cámara que aún se están procesando y guardando, por detrás. */
+    var shotsPending by mutableIntStateOf(0)
+        private set
+
+    /** Una foto detrás de otra: procesarlas a la vez llenaría la memoria. */
+    private val shotQueue = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * Guarda una foto de la Cámara Lumi que está en [file]: si hay algo que hacerle (Lumi Auto,
+     * filtro, horizonte, espejo) se procesa; si no, se guarda tal cual, con toda su resolución.
+     * Con [private], va cifrada a la carpeta privada en vez de a la galería.
+     */
+    fun saveShot(file: java.io.File, edit: com.lumi.galeria.data.ShotEdit, album: String, private: Boolean, onSaved: (Uri?) -> Unit) {
+        shotsPending++
+        viewModelScope.launch {
+            val context = getApplication<Application>()
+            val name = "IMG_" + java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", java.util.Locale.US).format(java.util.Date())
+            val needs = edit.auto || edit.look != com.lumi.galeria.data.CameraLook.NONE || edit.mirror || kotlin.math.abs(edit.tilt) in 0.6f..8f ||
+                edit.crop > 0f || (edit.heic && !private) || edit.portrait
+            val uri = shotQueue.withLock { withContext(Dispatchers.Default) {
+                val processed = if (needs) com.lumi.galeria.data.decodeShot(context, Uri.fromFile(file))?.let {
+                    runCatching { com.lumi.galeria.data.applyShotEdit(it, edit) }.getOrNull()
+                } else null
+                if (private) {
+                    val toStore = if (processed != null) {
+                        java.io.File(context.cacheDir, "privada_${System.nanoTime()}.jpg").also { out -> out.outputStream().use { processed.compress(Bitmap.CompressFormat.JPEG, 95, it) } }
+                    } else file
+                    val ok = LumiApp.vault.addFile(toStore, "$name.jpg", isVideo = false)
+                    if (toStore !== file) toStore.delete()
+                    return@withContext if (ok) Uri.EMPTY else null
+                }
+                val saved = if (processed != null) com.lumi.galeria.data.saveProcessed(context, processed, name, album, file, edit.heic)
+                else saveFileToAlbum(context, file, name, album)
+                if (keepOriginal && processed != null) saveFileToAlbum(context, file, name + "_original", album)
+                saved
+            } }
+            shotsPending--
+            file.delete()
+            if (private) say(if (uri != null) "Guardada cifrada en la carpeta privada" else "No se pudo guardar")
+            else if (uri == null) say("No se pudo guardar la foto")
+            onSaved(uri?.takeIf { it != Uri.EMPTY })
+            reload()
+        }
+    }
+
+    /** Para otra app: procesa la foto (Lumi Auto, recorte…) y la deja en un JPEG, sin guardarla en la galería. */
+    fun processShotToFile(file: java.io.File, edit: com.lumi.galeria.data.ShotEdit, onReady: (java.io.File?) -> Unit) {
+        viewModelScope.launch {
+            val context = getApplication<Application>()
+            val out = shotQueue.withLock {
+                withContext(Dispatchers.Default) {
+                    runCatching {
+                        val bmp = com.lumi.galeria.data.decodeShot(context, Uri.fromFile(file)) ?: return@runCatching file
+                        val done = com.lumi.galeria.data.applyShotEdit(bmp, edit)
+                        java.io.File(context.cacheDir, "entrega_${System.nanoTime()}.jpg").also { f -> f.outputStream().use { done.compress(Bitmap.CompressFormat.JPEG, 95, it) } }
+                    }.getOrNull()
+                }
+            }
+            if (out != null && out != file) file.delete()
+            onReady(out)
+        }
+    }
+
+    fun processBitmapToFile(bitmap: Bitmap, edit: com.lumi.galeria.data.ShotEdit, onReady: (java.io.File?) -> Unit) {
+        viewModelScope.launch {
+            val context = getApplication<Application>()
+            val file = withContext(Dispatchers.IO) {
+                java.io.File(context.cacheDir, "montada_${System.nanoTime()}.jpg").also { out -> out.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 97, it) } }
+            }
+            processShotToFile(file, edit, onReady)
+        }
+    }
+
+    /** La cámara a solas (sin la galería): se lee la última copia guardada de la biblioteca, sin analizar nada. */
+    fun loadQuick() {
+        if (lastLibrary != null || _state.value.items.isNotEmpty()) return
+        viewModelScope.launch {
+            val before = withContext(Dispatchers.IO) { readSnapshot(getApplication()) }
+            if (!before.isNullOrEmpty()) publish(before, emptyList(), withIndex = false)
+        }
+    }
+
+    /** Guarda una foto ya montada (noche, HDR, ráfaga) con lo demás que toque. */
+    fun saveBitmapShot(bitmap: Bitmap, edit: com.lumi.galeria.data.ShotEdit, album: String, private: Boolean, onSaved: (Uri?) -> Unit) {
+        viewModelScope.launch {
+            val context = getApplication<Application>()
+            val file = withContext(Dispatchers.IO) {
+                java.io.File(context.cacheDir, "montada_${System.currentTimeMillis()}.jpg").also { out -> out.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 97, it) } }
+            }
+            saveShot(file, edit, album, private, onSaved)
+        }
+    }
+
+    private fun saveFileToAlbum(context: Context, file: java.io.File, name: String, album: String): Uri? = runCatching {
+        val resolver = context.contentResolver
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, "$name.jpg")
+            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, if (com.lumi.galeria.data.isWritableAlbumPath(album)) album else "DCIM/Camera/")
+            put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val target = resolver.insert(android.provider.MediaStore.Images.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY), values)!!
+        resolver.openOutputStream(target)!!.use { out -> file.inputStream().use { it.copyTo(out) } }
+        resolver.update(target, android.content.ContentValues().apply { put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+        target
+    }.getOrNull()
+
+    // --- Historial de códigos QR ---
+
+    class QrEntry(val type: String, val value: String, val time: Long)
+
+    var qrHistory by mutableStateOf(readQrHistory())
+        private set
+
+    private fun readQrHistory(): List<QrEntry> = runCatching {
+        val a = org.json.JSONArray(prefs.getString(KEY_QR_HISTORY, "[]"))
+        (0 until a.length()).map { a.getJSONObject(it).let { o -> QrEntry(o.getString("t"), o.getString("v"), o.getLong("m")) } }
+    }.getOrDefault(emptyList())
+
+    fun rememberQr(type: String, value: String) {
+        if (value.isBlank()) return
+        qrHistory = (listOf(QrEntry(type, value, System.currentTimeMillis())) + qrHistory.filter { it.value != value }).take(60)
+        val a = org.json.JSONArray()
+        qrHistory.forEach { a.put(org.json.JSONObject().put("t", it.type).put("v", it.value).put("m", it.time)) }
+        prefs.edit().putString(KEY_QR_HISTORY, a.toString()).apply()
+    }
+
+    fun clearQrHistory() {
+        qrHistory = emptyList()
+        prefs.edit().remove(KEY_QR_HISTORY).apply()
+    }
+
+    // --- Mejorar fotos que ya existen ---
+
+    /** Aplica Lumi Auto a [photos] y guarda cada una como copia junto a la original. */
+    fun enhancePhotos(photos: List<MediaItem>) {
+        if (making != null || photos.isEmpty()) return
+        viewModelScope.launch {
+            making = 0
+            val context = getApplication<Application>()
+            var done = 0
+            withContext(Dispatchers.Default) {
+                photos.forEachIndexed { i, item ->
+                    val bmp = com.lumi.galeria.data.decodeShot(context, item.uri)
+                    if (bmp != null) {
+                        val better = runCatching { com.lumi.galeria.data.lumiAuto(bmp) }.getOrNull()
+                        if (better != null && saveNewPhoto(context, better, item.name.substringBeforeLast('.') + "_mejorada", item.path)) done++
+                    }
+                    making = (i + 1) * 100 / photos.size
+                }
+            }
+            making = null
+            say(countText(done, "foto mejorada", "fotos mejoradas") + if (Lang.english) " (saved as copies)" else " (guardadas como copias)")
+            if (done > 0) {
+                if (backStack.lastOrNull() == Screen.Enhance) back()
+                reload()
+            }
+        }
+    }
+
+    // --- Recorrido de lo que hace Lumi ---
+
+    /** El recorrido ya se vio (o se saltó): no vuelve a salir solo. */
+    val tourSeen: Boolean get() = prefs.getBoolean(KEY_TOUR, false)
+
+    fun tourDone() = prefs.edit().putBoolean(KEY_TOUR, true).apply()
+
+    // --- Acabado: abrir fotos desde fuera, ocultar en recientes, atajos de cámara ---
+
+    /** Modo con el que se abre la Cámara Lumi la próxima vez (QR, documento…); null, el de siempre. */
+    var cameraStart: String? = null
+
+    /** Foto que pidió abrir un widget (o la cámara) antes de que la galería estuviera cargada. */
+    private var pendingPhoto: Long? = null
+    private var pendingEdit = false
+
+    /** Abre [id] en el visor, pasando de una a otra como en Fotos; con [edit], en el editor. */
+    fun openPhoto(id: Long, edit: Boolean = false) {
+        if (id < 0) return
+        pendingPhoto = id
+        pendingEdit = edit
+        if (_state.value.items.isNotEmpty()) openPending()
+    }
+
+    private fun openPending() {
+        val id = pendingPhoto ?: return
+        val items = _state.value.items
+        if (items.isEmpty()) return
+        pendingPhoto = null
+        if (items.any { it.id == id }) {
+            switchTab(Screen.Timeline)
+            open(Screen.Viewer(Source.Timeline, id))
+            if (pendingEdit) open(Screen.Editor(id))
+        } else {
+            openExternal(com.lumi.galeria.widget.Widgets.photoUri(id), false)
+        }
+    }
+
+    /** Cuándo se ve Lumi en blanco en la vista de apps recientes. */
+    var recentsHide by mutableStateOf(runCatching { RecentsHide.valueOf(prefs.getString(KEY_RECENTS, null) ?: "ALWAYS") }.getOrDefault(RecentsHide.ALWAYS))
+        private set
+
+    fun chooseRecentsHide(choice: RecentsHide) {
+        recentsHide = choice
+        prefs.edit().putString(KEY_RECENTS, choice.name).apply()
+    }
+
+    // --- Cámara ---
+
+    /** Qué cámara abre el botón de cámara. */
+    var cameraChoice by mutableStateOf(runCatching { CameraChoice.valueOf(prefs.getString(KEY_CAMERA, null) ?: "ASK") }.getOrDefault(CameraChoice.ASK))
+        private set
+
+    /** Se está preguntando qué cámara usar. */
+    var askCamera by mutableStateOf(false)
+
+    fun chooseCamera(choice: CameraChoice) {
+        cameraChoice = choice
+        prefs.edit().putString(KEY_CAMERA, choice.name).apply()
+    }
+
+    /** Álbum donde guarda la Cámara Lumi (carpeta relativa, p. ej. «DCIM/Camera/»). */
+    var cameraAlbum by mutableStateOf(prefs.getString(KEY_CAMERA_ALBUM, "DCIM/Camera/") ?: "DCIM/Camera/")
+        private set
+
+    fun chooseCameraAlbum(path: String) {
+        cameraAlbum = path
+        prefs.edit().putString(KEY_CAMERA_ALBUM, path).apply()
+    }
+
+    /** Guarda en la carpeta privada una foto hecha con la Cámara Lumi (modo Privada), sin pasar por la galería. */
+    fun savePrivatePhoto(file: java.io.File) = viewModelScope.launch {
+        val ok = withContext(Dispatchers.IO) { LumiApp.vault.addFile(file, "Privada_" + System.currentTimeMillis() / 1000 + ".jpg", isVideo = false) }
+        file.delete()
+        say(if (ok) "Guardada cifrada en la carpeta privada" else "No se pudo guardar")
+        if (_state.value.vaultOpen && !_state.value.vaultDecoy) unlockVault()
     }
 
     fun rename(item: MediaItem, name: String) = viewModelScope.launch {
@@ -1132,6 +1968,8 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
         writeIds(KEY_FAVORITES, next)
         _state.update { it.copy(favorites = next) }
         if (_state.value.filter == TileFilter.FAVORITES) refresh()
+        // El widget de favoritas se entera al momento.
+        com.lumi.galeria.widget.Widgets.refreshAll(getApplication())
     }
 
     // --- Importar de una cámara o una memoria ---
@@ -1307,6 +2145,67 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setPip(active: Boolean) = _state.update { it.copy(pip = active) }
+
+    // --- Accesibilidad ---
+
+    /** Tamaño de letra de Lumi (1 = el del teléfono). */
+    var textScale by mutableStateOf(prefs.getFloat(KEY_TEXT_SCALE, 1f))
+        private set
+    var highContrast by mutableStateOf(prefs.getBoolean(KEY_CONTRAST, false))
+        private set
+
+    fun chooseTextScale(scale: Float) {
+        textScale = scale
+        prefs.edit().putFloat(KEY_TEXT_SCALE, scale).apply()
+    }
+
+    fun chooseHighContrast(on: Boolean) {
+        highContrast = on
+        prefs.edit().putBoolean(KEY_CONTRAST, on).apply()
+    }
+
+    // --- Carpetas de álbumes (solo en Lumi: las fotos no se mueven) ---
+
+    var albumFolders by mutableStateOf(readFolders())
+        private set
+
+    private fun readFolders(): List<AlbumFolder> = runCatching {
+        val a = org.json.JSONArray(prefs.getString(KEY_FOLDERS, "[]"))
+        (0 until a.length()).map { i ->
+            val o = a.getJSONObject(i)
+            val ids = o.getJSONArray("a")
+            AlbumFolder(o.getLong("id"), o.getString("n"), (0 until ids.length()).map { ids.getLong(it) })
+        }
+    }.getOrDefault(emptyList())
+
+    private fun saveFolders(next: List<AlbumFolder>) {
+        albumFolders = next
+        val a = org.json.JSONArray()
+        next.forEach { f -> a.put(org.json.JSONObject().put("id", f.id).put("n", f.name).put("a", org.json.JSONArray(f.albums))) }
+        prefs.edit().putString(KEY_FOLDERS, a.toString()).apply()
+    }
+
+    fun createFolder(name: String, first: Long?) {
+        val id = System.currentTimeMillis()
+        val cleaned = albumFolders.map { f -> AlbumFolder(f.id, f.name, f.albums.filter { it != first }) }
+        saveFolders(cleaned + AlbumFolder(id, name, listOfNotNull(first)))
+        say("Carpeta «$name» creada")
+    }
+
+    /** Un álbum solo puede estar en una carpeta: si estaba en otra, se cambia. */
+    fun putInFolder(folderId: Long, bucketId: Long) {
+        saveFolders(albumFolders.map { f ->
+            val rest = f.albums.filter { it != bucketId }
+            AlbumFolder(f.id, f.name, if (f.id == folderId) rest + bucketId else rest)
+        })
+    }
+
+    fun takeOutOfFolder(bucketId: Long) = saveFolders(albumFolders.map { f -> AlbumFolder(f.id, f.name, f.albums.filter { it != bucketId }) })
+
+    fun renameFolder(id: Long, name: String) = saveFolders(albumFolders.map { f -> if (f.id == id) AlbumFolder(f.id, name, f.albums) else f })
+
+    /** Deshacer una carpeta: sus álbumes vuelven a la lista. */
+    fun deleteFolder(id: Long) = saveFolders(albumFolders.filter { it.id != id })
 
     // --- Más gestión de álbumes ---
 
@@ -1599,7 +2498,7 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
     private fun writeIds(key: String, ids: Set<Long>) =
         prefs.edit().putStringSet(key, ids.mapTo(HashSet()) { it.toString() }).apply()
 
-    private companion object {
+    companion object {
         const val KEY_FAVORITES = "favorites"
         const val KEY_KEPT = "kept"
         const val KEY_THEME = "theme"
@@ -1609,12 +2508,27 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_PIN_SALT = "pinSalt"
         const val KEY_DECOY_HASH = "decoyHash"
         const val KEY_FACES = "faces"
+        const val KEY_CAMERA = "cameraChoice"
+        // Con cada actualización grande cambia, para que el recorrido salga una vez con lo nuevo.
+        const val KEY_TOUR = "tourSeen_1.1"
+        const val KEY_RECENTS = "recentsHide"
+        const val KEY_LUMI_AUTO = "lumiAuto"
+        const val KEY_KEEP_ORIGINAL = "keepOriginal"
+        const val KEY_SHUTTER_SOUND = "shutterSound"
+        const val KEY_MIRROR = "mirrorSelfie"
+        const val KEY_QR_HISTORY = "qrHistory"
+        const val KEY_CAMERA_ALBUM = "cameraAlbum"
+        const val KEY_MANAGE_ASKED = "manageAsked"
         const val KEY_HIGHLIGHTS = "dayHighlights"
-        const val KEY_NOT_THEM = "notThem"
+        const val KEY_PEOPLE_ORDER = "peopleOrder"
+        const val KEY_CIRCLES = "peopleCircles"
         const val KEY_DECOY_SALT = "decoySalt"
         const val KEY_LOCKED_ALBUMS = "lockedAlbums"
         const val KEY_HIDDEN_ALBUMS = "hiddenAlbums"
         const val KEY_PINNED_ALBUMS = "pinnedAlbums"
+        const val KEY_FOLDERS = "albumFolders"
+        const val KEY_TEXT_SCALE = "textScale"
+        const val KEY_CONTRAST = "highContrast"
         const val KEY_COVERS = "albumCovers"
         const val KEY_SHOW_HIDDEN = "showHidden"
         const val KEY_ITEM_SORT = "itemSort"

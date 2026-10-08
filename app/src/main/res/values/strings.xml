@@ -1,7 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="widget_description">Una de tus fotos favoritas, que cambia cada hora.</string>
+    <string name="widget_description">Tus favoritas, un álbum, una persona o recuerdos. Tú eliges.</string>
     <string name="widget_photo_label">Foto de Lumi</string>
     <string name="widget_memory_label">Recuerdos de Lumi</string>
     <string name="widget_memory_description">Lo que hiciste estos días en otros años.</string>
+    <string name="widget_shortcuts_label">Atajos de Lumi</string>
+    <string name="widget_shortcuts_description">Cámara, leer QR, escanear y buscar, a un toque.</string>
+    <string name="widget_next">Otra foto</string>
+    <string name="camera_launcher_label">Cámara Lumi</string>
+    <string name="widget_camera_label">Cámara de Lumi</string>
+    <string name="widget_camera_description">Abre la Cámara Lumi con un toque: foto, selfie, vídeo o QR.</string>
+    <string name="widget_mosaic_label">Mosaico de Lumi</string>
+    <string name="widget_mosaic_description">Cuatro o seis de tus fotos que van cambiando.</string>
 </resources>

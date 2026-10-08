@@ -69,7 +69,7 @@ import com.lumi.galeria.formatSize
 import com.lumi.galeria.tr
 
 /** Ventana de elección abierta en Ajustes. */
-private enum class Picker { THEME, COLOR, LANGUAGE, ORDER, LOCK, DECOY }
+private enum class Picker { THEME, COLOR, LANGUAGE, ORDER, LOCK, DECOY, FORGET_FACES, CAMERA, RECENTS, MEMORY_HOUR, TEXT_SIZE }
 
 private const val CONTACT = "contactosharklin@gmail.com"
 private const val POLICY = "https://xsharklinx.github.io/lumi/privacidad.html"
@@ -89,6 +89,18 @@ fun SettingsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
     }
     var query by remember { mutableStateOf("") }
     var picker by remember { mutableStateOf<Picker?>(null) }
+    var cameraIcon by remember { mutableStateOf(com.lumi.galeria.cameraIconOn(context)) }
+    // Aviso de recuerdos por la mañana: viene apagado; en Android 13 o posterior hace falta permiso.
+    var memoryOn by remember { mutableStateOf(com.lumi.galeria.widget.Daily.memoryNotify(context).first) }
+    var memoryHour by remember { mutableStateOf(com.lumi.galeria.widget.Daily.memoryNotify(context).second) }
+    fun setMemory(on: Boolean, hour: Int) {
+        memoryOn = on
+        memoryHour = hour
+        com.lumi.galeria.widget.Daily.saveMemoryNotify(context, on, hour)
+    }
+    val askNotifications = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) setMemory(true, memoryHour) else vm.say("Sin permiso de avisos no se puede avisar de los recuerdos")
+    }
     // Cuánto ocupa la biblioteca y cómo se reparte.
     val usage = remember(state.items) {
         var photos = 0L
@@ -173,7 +185,7 @@ fun SettingsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                     }
                 }
 
-                Group("Privacidad y seguridad", words = "señuelo falso pedir huella al abrir bloqueo bloquear seguridad contraseña pin patron cara carpeta privada cifrada") {
+                Group("Privacidad y seguridad", words = "señuelo falso pedir huella al abrir bloqueo bloquear seguridad contraseña pin patron cara carpeta privada cifrada recientes multitarea dni tarjeta datos personales") {
                     Item(
                         Glyph.Icon(Icons.Filled.Lock), "Pedir huella al abrir Lumi", "Usa tu huella o el bloqueo del teléfono (PIN, patrón o contraseña).",
                         words = "bloqueo bloquear seguridad contraseña", toggle = state.appLock,
@@ -197,9 +209,62 @@ fun SettingsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                         Glyph.Icon(Icons.Filled.Lock), "Carpeta privada", "Fotos cifradas que solo se abren con tu huella o tu bloqueo",
                         words = "cifrada oculta", onClick = { openVault() }, link = true,
                     )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Search), "Fotos con datos personales",
+                        if (state.sensitive.isEmpty()) "Documentos de identidad, tarjetas y contraseñas: Lumi te avisa si encuentra alguna"
+                        else countText(state.sensitive.size, "foto con datos personales a la vista", "fotos con datos personales a la vista"),
+                        words = "dni cedula pasaporte tarjeta banco contraseña clave datos personales", onClick = { vm.open(Screen.Sensitive) }, link = true,
+                    )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Lock), "Ocultar en apps recientes",
+                        if (android.os.Build.VERSION.SDK_INT >= 33) "Al cambiar de app, Lumi se ve en blanco en vez de tus fotos."
+                        else "Al cambiar de app, Lumi se ve en blanco. En esta versión de Android también impide hacer capturas dentro de Lumi.",
+                        value = vm.recentsHide.label, words = "recientes multitarea miniatura cambiar de app", onClick = { picker = Picker.RECENTS },
+                    )
                 }
 
-                Group("Almacenamiento", words = "importar camara reflex liberar espacio repetidas videos grandes capturas papelera borrar eliminar 30 dias copia seguridad tarjeta usb") {
+                Group("Accesibilidad", words = "letra grande tamaño texto contraste leer talkback vista") {
+                    Item(
+                        Glyph.Icon(Icons.Filled.Edit), "Tamaño de letra", value = textSizeName(vm.textScale),
+                        words = "letra grande pequeña tamaño texto", onClick = { picker = Picker.TEXT_SIZE },
+                    )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Info), "Contraste alto", "Textos secundarios y líneas más marcados",
+                        words = "contraste leer ver", toggle = vm.highContrast, onClick = { vm.chooseHighContrast(!vm.highContrast) },
+                    )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Face), "Con TalkBack", "Cada foto se lee con lo que sale en ella, quién, dónde y cuándo.",
+                        words = "talkback lector pantalla ciego",
+                    )
+                }
+
+                Group("Fondo y avisos", words = "fondo pantalla wallpaper cambiar solo recuerdo aviso notificacion mañana") {
+                    val wall = remember(picker) { com.lumi.galeria.widget.Daily.wallSettings(context) }
+                    Item(
+                        Glyph.Icon(Icons.Filled.Refresh), "Fondo que cambia solo",
+                        if (wall.on) tr(wall.source.label) + " · " + tr(if (wall.hours == 24) "Cada día" else if (wall.hours == 1) "Cada hora" else "Cada 3 horas")
+                        else "Tus favoritas o un álbum de fondo de pantalla, cada día o cada hora",
+                        words = "fondo pantalla wallpaper", onClick = { vm.open(Screen.AutoWallpaper) }, link = true,
+                    )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Star), "Recuerdo del día",
+                        if (memoryOn) "Un aviso a las ${memoryHour}:00 cuando haya fotos de este día en otros años. Como mucho uno al día."
+                        else "Un aviso por la mañana cuando haya fotos de este día en otros años",
+                        words = "recuerdo aviso notificacion", toggle = memoryOn,
+                        onClick = {
+                            if (memoryOn) setMemory(false, memoryHour)
+                            else if (android.os.Build.VERSION.SDK_INT >= 33 &&
+                                androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+                            ) askNotifications.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                            else setMemory(true, memoryHour)
+                        },
+                    )
+                    if (memoryOn) {
+                        Item(Glyph.Icon(Icons.Filled.Edit), "Hora del aviso", value = "${memoryHour}:00", words = "hora", onClick = { picker = Picker.MEMORY_HOUR })
+                    }
+                }
+
+                Group("Almacenamiento", words = "confirmar preguntar aviso permiso importar camara reflex liberar espacio repetidas videos grandes capturas papelera borrar eliminar 30 dias copia seguridad tarjeta usb") {
                     Item(
                         Glyph.Icon(SdCardIcon), "Liberar espacio",
                         if (recoverable > 0) "Puedes recuperar ${formatSize(recoverable)}" else "Repetidas, vídeos grandes y capturas antiguas",
@@ -210,6 +275,17 @@ fun SettingsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                         if (state.useTrash) "Lo que borras se guarda 30 días y después se elimina solo, para siempre."
                         else "Lo que borras se elimina en el acto y no se puede recuperar.",
                         words = "borrar eliminar 30 dias", toggle = state.useTrash, onClick = { vm.setUseTrash(!state.useTrash) },
+                    )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Check), "Borrar sin confirmación de Android",
+                        when {
+                            android.os.Build.VERSION.SDK_INT < 31 -> "Necesita Android 12 o posterior."
+                            state.manageMedia -> "Lumi borra y mueve sin que Android pregunte cada vez. Toca para cambiarlo."
+                            else -> "Android pregunta cada vez que borras o mueves. Toca y elige «Permitir» para que deje de hacerlo."
+                        },
+                        value = if (android.os.Build.VERSION.SDK_INT < 31) null else if (state.manageMedia) "Activado" else "Desactivado",
+                        words = "permiso preguntar aviso confirmar gestion multimedia",
+                        onClick = { com.lumi.galeria.openManageMedia(context) },
                     )
                     Item(
                         Glyph.Icon(Icons.Filled.Delete), "Papelera",
@@ -233,13 +309,18 @@ fun SettingsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
 
                 Group("Análisis de las fotos", words = "analisis buscar reconocer texto personas caras agrupar") {
                     Item(
-                        Glyph.Icon(Icons.Filled.Face), "Agrupar caras",
+                        Glyph.Icon(Icons.Filled.Face), "Buscar caras",
                         when {
-                            !state.facesOn -> "Apagado. Lo que se sabía de las caras está borrado."
-                            state.facesLooked < state.facesTotal -> "Buscando caras: ${state.facesLooked} de ${state.facesTotal} fotos"
+                            !state.facesOn -> "En pausa. Las personas y sus nombres se quedan; actívalo para seguir donde iba."
+                            state.facesLooked < state.facesTotal -> "Buscando caras: ${state.facesLooked} de ${state.facesTotal} fotos con gente"
                             else -> "Junta las fotos de cada persona. En el teléfono: ninguna cara sale de él."
                         },
-                        words = "personas caras rostros gente", toggle = state.facesOn, onClick = { vm.setFacesOn(!state.facesOn) },
+                        words = "personas caras rostros gente agrupar pausar", toggle = state.facesOn, onClick = { vm.setFacesOn(!state.facesOn) },
+                    )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Delete), "Borrar todo lo de las caras",
+                        "Personas, nombres y grupos. No se puede deshacer.",
+                        words = "borrar caras personas", onClick = { picker = Picker.FORGET_FACES },
                     )
                     if (state.facesOn && state.hiddenPeople > 0) {
                         Item(
@@ -260,7 +341,53 @@ fun SettingsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                     )
                 }
 
-                Group("Acerca de", words = "acerca version lumi gallery privacidad politica contacto correo internet") {
+                Group("Cámara", words = "camara foto telefono lumi qr preguntar mejorar auto sonido selfie espejo original") {
+                    Item(
+                        Glyph.Icon(Icons.Filled.Face), "Al tocar la cámara", value = vm.cameraChoice.label,
+                        words = "camara telefono lumi preguntar predeterminada", onClick = { picker = Picker.CAMERA },
+                    )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Face), "Usar Lumi como cámara del teléfono",
+                        "Toca, elige «Cámara Lumi» y «Siempre». Si se abre otra cámara sin preguntar, quita su opción predeterminada en los ajustes de Android.",
+                        words = "predeterminada camara telefono sistema siempre", onClick = {
+                            runCatching { context.startActivity(android.content.Intent(android.provider.MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)) }
+                        }, link = true,
+                    )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Star), "Icono «Cámara Lumi»", "Un segundo icono en tus apps que abre la cámara al instante. Es la misma app.",
+                        words = "icono cajon acceso directo", toggle = cameraIcon,
+                        onClick = {
+                            cameraIcon = !cameraIcon
+                            com.lumi.galeria.setCameraIcon(context, cameraIcon)
+                        },
+                    )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Star), "Lumi Auto", "Aclara, da contraste, color y nitidez a cada foto de la Cámara Lumi al guardarla",
+                        words = "mejorar aclarar oscura auto calidad", toggle = vm.lumiAuto,
+                        onClick = { vm.setCameraOption(com.lumi.galeria.LumiViewModel.KEY_LUMI_AUTO, !vm.lumiAuto) },
+                    )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Star), "Guardar también la original", "Además de la mejorada, la foto tal como sale del sensor",
+                        words = "original copia sensor", toggle = vm.keepOriginal,
+                        onClick = { vm.setCameraOption(com.lumi.galeria.LumiViewModel.KEY_KEEP_ORIGINAL, !vm.keepOriginal) },
+                    )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Check), "Sonido al disparar", null,
+                        words = "sonido disparo obturador", toggle = vm.shutterSound,
+                        onClick = { vm.setCameraOption(com.lumi.galeria.LumiViewModel.KEY_SHUTTER_SOUND, !vm.shutterSound) },
+                    )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Face), "Selfies como en un espejo", "Si no, salen como te ven los demás",
+                        words = "selfie espejo frontal invertir", toggle = vm.mirrorSelfie,
+                        onClick = { vm.setCameraOption(com.lumi.galeria.LumiViewModel.KEY_MIRROR, !vm.mirrorSelfie) },
+                    )
+                }
+
+                Group("Acerca de", words = "acerca version lumi gallery privacidad politica contacto correo internet funciones recorrido") {
+                    Item(
+                        Glyph.Icon(Icons.Filled.Info), "Todo lo que puede hacer Lumi", "El recorrido por sus funciones, otra vez",
+                        words = "funciones recorrido ayuda novedades", onClick = { vm.open(Screen.Tour) }, link = true,
+                    )
                     Item(
                         Glyph.Icon(Icons.Filled.Info), "Lumi Gallery $version",
                         "Sin anuncios, sin cuenta y sin permiso de internet: tus fotos no salen del teléfono.",
@@ -309,6 +436,27 @@ fun SettingsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
             picker = null
             actions.unlock { if (change) vm.createDecoyPin() else vm.removeDecoyPin() }
         }) { picker = null }
+        Picker.TEXT_SIZE -> ChoiceDialog("Tamaño de letra", listOf(0.9f, 1f, 1.15f, 1.3f), vm.textScale, { textSizeName(it) }, { vm.chooseTextScale(it); picker = null }) { picker = null }
+        Picker.RECENTS -> ChoiceDialog("Ocultar en apps recientes", com.lumi.galeria.RecentsHide.entries, vm.recentsHide, { it.label }, { vm.chooseRecentsHide(it); picker = null }) { picker = null }
+        Picker.MEMORY_HOUR -> ChoiceDialog("Hora del aviso", listOf(7, 8, 9, 10, 12, 20), memoryHour, { "$it:00" }, { setMemory(true, it); picker = null }) { picker = null }
+        Picker.CAMERA -> ChoiceDialog("Al tocar la cámara", com.lumi.galeria.CameraChoice.entries, vm.cameraChoice, { it.label }, { vm.chooseCamera(it); picker = null }) { picker = null }
+        Picker.FORGET_FACES -> AlertDialog(
+            onDismissRequest = { picker = null },
+            containerColor = Lumi.Surface,
+            title = { Text("¿Borrar todo lo de las caras?", style = HeadingStyle) },
+            text = {
+                Text(
+                    "Se borran ${countText(state.people.size, "persona", "personas")}, sus nombres y los grupos. Las fotos no se tocan. Si solo quieres que deje de buscar, usa la pausa.",
+                    style = SmallStyle.copy(fontSize = 15.sp, color = Lumi.Ink),
+                )
+            },
+            confirmButton = {
+                Text("Borrar", style = LabelStyle, color = Lumi.Danger, modifier = Modifier.clip(CircleShape).clickable { picker = null; vm.clearFaces() }.padding(12.dp))
+            },
+            dismissButton = {
+                Text("Cancelar", style = LabelStyle, color = Lumi.Muted, modifier = Modifier.clip(CircleShape).clickable { picker = null }.padding(12.dp))
+            },
+        )
         Picker.COLOR -> AlertDialog(
             onDismissRequest = { picker = null },
             containerColor = Lumi.Surface,
@@ -418,7 +566,7 @@ private fun Item(
 
 /** Ventana pequeña para elegir una opción entre varias; la actual lleva una marca. */
 @Composable
-private fun <T> ChoiceDialog(title: String, options: List<T>, current: T?, label: (T) -> String, onPick: (T) -> Unit, onDismiss: () -> Unit) {
+internal fun <T> ChoiceDialog(title: String, options: List<T>, current: T?, label: (T) -> String, onPick: (T) -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Lumi.Surface,
@@ -477,4 +625,11 @@ private fun UsageCard(count: Int, usage: LongArray, recoverable: Long, onClick: 
             color = Lumi.Accent,
         )
     }
+}
+
+private fun textSizeName(scale: Float): String = when {
+    scale < 0.95f -> tr("Pequeña")
+    scale < 1.05f -> tr("Normal")
+    scale < 1.2f -> tr("Grande")
+    else -> tr("Muy grande")
 }

@@ -279,7 +279,7 @@ fun ScreenshotsScreen(state: UiState, vm: LumiViewModel) {
     Column(Modifier.fillMaxSize().background(Lumi.Bg).navigationBarsPadding()) {
         ScreenHeader("Capturas", if (total == 0) "" else countText(total, "captura ordenada", "capturas ordenadas"), onBack = { vm.back() })
         if (groups.isEmpty()) {
-            EmptyMessage("No hay capturas", "Las capturas de pantalla aparecerán aquí, ordenadas por tipo.")
+            EmptyMessage("No hay capturas", "Las capturas de pantalla aparecerán aquí, ordenadas por tipo.", icon = PictureIcon)
             return@Column
         }
         if (state.deepPending > 0) {

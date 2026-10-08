@@ -122,6 +122,26 @@ class Vault(private val context: Context, name: String = "vault") {
         return true
     }
 
+    /** Guarda cifrada una foto o vídeo que solo existe como archivo temporal (la Cámara Lumi en modo Privada). */
+    fun addFile(file: File, name: String, isVideo: Boolean): Boolean {
+        val id = UUID.randomUUID().toString()
+        val body = File(dir, "$id.bin")
+        val thumb = File(dir, "$id.thumb")
+        val ok = runCatching {
+            file.inputStream().use { input -> encrypting(body).use { input.copyTo(it) } }
+            val preview = if (isVideo) android.media.ThumbnailUtils.createVideoThumbnail(file, Size(512, 512), null)
+            else android.media.ThumbnailUtils.createImageThumbnail(file, Size(512, 512), null)
+            encrypting(thumb).use { preview.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+        }.isSuccess
+        if (!ok) {
+            body.delete()
+            thumb.delete()
+            return false
+        }
+        writeIndex(list() + VaultItem(id, name, isVideo, System.currentTimeMillis(), file.length(), "DCIM/Camera/"))
+        return true
+    }
+
     fun thumbnail(id: String): Bitmap? = runCatching {
         decrypting(File(dir, "$id.thumb")).use { BitmapFactory.decodeStream(it) }
     }.getOrNull()

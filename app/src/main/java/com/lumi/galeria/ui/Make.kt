@@ -283,7 +283,7 @@ fun GifScreen(screen: Screen.Gif, state: UiState, vm: LumiViewModel) {
             if (shot != null) {
                 androidx.compose.foundation.Image(
                     shot.asImageBitmap(), null, Modifier.fillMaxSize(),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit, filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
                 )
             } else {
                 MediaThumb(item, 1024, Modifier.fillMaxSize())

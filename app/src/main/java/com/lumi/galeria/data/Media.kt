@@ -81,6 +81,8 @@ class Album(
     val pinned: Boolean = false,
     /** Cuántos de sus elementos están en la tarjeta de memoria. */
     val onCard: Int = 0,
+    /** Fecha de lo más reciente que tiene: ordena por «más recientes». */
+    val latest: Long = cover.date,
 )
 
 enum class ItemSort(val label: String) {
@@ -121,22 +123,24 @@ fun buildAlbums(
     covers: Map<Long, Long> = emptyMap(),
     /** Orden elegido a mano: los álbumes que no están, al final. */
     order: List<Long> = emptyList(),
+    /** Elige la portada cuando el usuario no ha fijado una; sin esto, la más reciente. */
+    pick: ((List<MediaItem>) -> MediaItem)? = null,
 ): List<Album> {
     val albums = items.groupBy { it.bucketId }.map { (id, list) ->
-        // La portada es la foto que eligió el usuario, si sigue en el álbum; si no, la más reciente.
-        val cover = covers[id]?.let { wanted -> list.firstOrNull { it.id == wanted } } ?: list[0]
-        Album(id, albumName(list[0].bucket), list[0].path, cover, list.size, id in locked, id in hidden, id in pinned, list.count { it.onCard })
+        // La portada es la foto que eligió el usuario, si sigue en el álbum; si no, la mejor de las últimas.
+        val cover = covers[id]?.let { wanted -> list.firstOrNull { it.id == wanted } } ?: pick?.invoke(list) ?: list[0]
+        Album(id, albumName(list[0].bucket), list[0].path, cover, list.size, id in locked, id in hidden, id in pinned, list.count { it.onCard }, list[0].date)
     }
     val sorted = when (sort) {
         // La cámara siempre va primero en el orden por defecto.
         AlbumSort.RECENT -> albums.sortedWith(
-            compareByDescending<Album> { it.cover.bucket.equals("Camera", ignoreCase = true) }.thenByDescending { it.cover.date },
+            compareByDescending<Album> { it.cover.bucket.equals("Camera", ignoreCase = true) }.thenByDescending { it.latest },
         )
         AlbumSort.NAME -> albums.sortedBy { normalize(it.name) }
         AlbumSort.COUNT -> albums.sortedByDescending { it.count }
         AlbumSort.MANUAL -> {
             val place = order.withIndex().associate { it.value to it.index }
-            albums.sortedWith(compareBy<Album> { place[it.bucketId] ?: Int.MAX_VALUE }.thenByDescending { it.cover.date })
+            albums.sortedWith(compareBy<Album> { place[it.bucketId] ?: Int.MAX_VALUE }.thenByDescending { it.latest })
         }
     }
     return sorted.sortedByDescending { it.pinned }

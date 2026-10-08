@@ -19,8 +19,30 @@
         android:name="android.permission.INTERNET"
         tools:node="remove" />
 
-    <!-- Poner una foto de fondo de pantalla desde la propia app. -->
+    <!-- Android 12 o posterior: con «Gestión de contenido multimedia» activado por el usuario, borrar,
+         mover y editar ya no muestra el aviso del sistema cada vez. Se concede en Ajustes del teléfono. -->
+    <uses-permission
+        android:name="android.permission.MANAGE_MEDIA"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- Cámara Lumi: fotos, vídeo, QR y texto en vivo. El micrófono solo para el sonido de los vídeos.
+         La cámara no es obligatoria: Lumi funciona igual en dispositivos sin ella. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.any" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
+    <!-- Poner una foto de fondo de pantalla desde la propia app, o que cambie sola. -->
     <uses-permission android:name="android.permission.SET_WALLPAPER" />
+    <!-- Solo para el aviso opcional de recuerdos por la mañana; viene apagado. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- La biblioteca de tareas programadas lo declara para un servicio que Lumi no usa: se quita. -->
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE"
+        tools:node="remove" />
 
     <!-- El escáner de documentos de Google fija su pantalla en vertical, y Google Play deduce de eso
          que la app necesita pantalla vertical: dejaría fuera televisores, Chromebooks y otros aparatos
@@ -36,18 +58,20 @@
         android:label="Lumi Gallery"
         android:largeHeap="true"
         android:supportsRtl="true"
+        android:enableOnBackInvokedCallback="true"
         android:theme="@style/Theme.Lumi">
 
         <!-- Google Play descarga estos modelos junto con la app, en vez de la primera vez que se usan. -->
         <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"
-            android:value="ocr,ica,subject_segment,face" />
+            android:value="ocr,ica,subject_segment,face,barcode" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:launchMode="singleTop"
-            android:supportsPictureInPicture="true">
+            android:supportsPictureInPicture="true"
+            android:theme="@style/Theme.Lumi.Starting">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -100,6 +124,116 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/widget_memory_info" />
         </receiver>
+
+        <!-- La Cámara Lumi a solas: el icono propio, el widget, la pantalla de bloqueo y las fotos
+             que piden otras apps. Así Lumi se puede elegir como cámara del teléfono. -->
+        <activity
+            android:name=".CameraActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:exported="true"
+            android:label="@string/camera_launcher_label"
+            android:taskAffinity="com.lumigallery.app.camara"
+            android:theme="@style/Theme.Lumi">
+            <intent-filter>
+                <action android:name="android.media.action.STILL_IMAGE_CAMERA" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.media.action.STILL_IMAGE_CAMERA_SECURE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.media.action.VIDEO_CAMERA" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.media.action.IMAGE_CAPTURE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.media.action.IMAGE_CAPTURE_SECURE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.media.action.VIDEO_CAPTURE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Segundo icono «Cámara Lumi» en el cajón de apps: apagado hasta que se activa en Ajustes. -->
+        <activity-alias
+            android:name=".CameraLauncher"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_camera_launcher"
+            android:label="@string/camera_launcher_label"
+            android:roundIcon="@mipmap/ic_camera_launcher"
+            android:targetActivity=".CameraActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity
+            android:name=".widget.CameraWidgetSetupActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Lumi">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name=".CameraWidget"
+            android:exported="false"
+            android:label="@string/widget_camera_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_camera_info" />
+        </receiver>
+
+        <receiver
+            android:name=".MosaicWidget"
+            android:exported="false"
+            android:label="@string/widget_mosaic_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_mosaic_info" />
+        </receiver>
+
+        <receiver
+            android:name=".ShortcutWidget"
+            android:exported="false"
+            android:label="@string/widget_shortcuts_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_shortcuts_info" />
+        </receiver>
+
+        <!-- Se abre al poner el widget de fotos: qué fotos enseña y cada cuánto cambia. -->
+        <activity
+            android:name=".widget.WidgetSetupActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Lumi">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
+        <!-- La biblioteca de tareas programadas trae un servicio en primer plano que Lumi no usa. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            tools:node="remove" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

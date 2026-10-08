@@ -20,8 +20,8 @@ android {
         // Android 11: la papelera del sistema (createTrashRequest) existe desde aquí.
         minSdk = 30
         targetSdk = 36
-        versionCode = 920
-        versionName = "0.9.2"
+        versionCode = 1100
+        versionName = "1.1.0"
         // Los modelos de reconocimiento traen código nativo por arquitectura. En Google Play cada
         // teléfono descarga solo la suya; x86_64 es para el emulador.
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
@@ -87,6 +87,12 @@ dependencies {
     implementation("androidx.compose.material:material-icons-core")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.core:core-ktx:1.15.0")
+    // Pantalla de arranque con el logo animado, igual en todas las versiones de Android.
+    implementation("androidx.core:core-splashscreen:1.0.1")
+    // Cambiar el fondo y avisar de recuerdos a su hora, sin nada abierto en segundo plano.
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
+    // Guardar las fotos de la cámara en HEIC con el codificador del propio teléfono.
+    implementation("androidx.heifwriter:heifwriter:1.0.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.palette:palette-ktx:1.0.0")
@@ -115,4 +121,14 @@ dependencies {
     // (assets/caras.tflite). El motor que lo ejecuta lo pone Google Play, no va dentro de la app.
     implementation("com.google.android.gms:play-services-mlkit-face-detection:17.1.0")
     implementation("com.google.android.gms:play-services-tflite-java:16.4.0")
+    // Cámara Lumi: CameraX (vista previa, fotos, vídeo, modos del móvil) y el puente con ML Kit para
+    // leer QR y texto en vivo. El lector de códigos lo descarga Google Play, como los demás.
+    implementation("androidx.camera:camera-core:1.4.1")
+    implementation("androidx.camera:camera-camera2:1.4.1")
+    implementation("androidx.camera:camera-lifecycle:1.4.1")
+    implementation("androidx.camera:camera-view:1.4.1")
+    implementation("androidx.camera:camera-video:1.4.1")
+    implementation("androidx.camera:camera-extensions:1.4.1")
+    implementation("androidx.camera:camera-mlkit-vision:1.4.1")
+    implementation("com.google.android.gms:play-services-mlkit-barcode-scanning:18.3.1")
 }

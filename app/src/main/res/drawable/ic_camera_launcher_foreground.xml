@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cámara Lumi: cuerpo de cámara con el sol del logo como objetivo, dentro de la zona segura. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,40h10l5,-7h18l5,7h10a4,4 0,0 1,4 4v28a4,4 0,0 1,-4 4H30a4,4 0,0 1,-4 -4V44a4,4 0,0 1,4 -4z" />
+    <path
+        android:fillColor="#5B3DF5"
+        android:pathData="M54,58m-12,0a12,12 0,1 1,24 0a12,12 0,1 1,-24 0" />
+    <path
+        android:fillColor="#B9A8FF"
+        android:pathData="M54,58m-7,0a7,7 0,1 1,14 0a7,7 0,1 1,-14 0" />
+</vector>

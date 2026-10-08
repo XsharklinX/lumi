@@ -120,7 +120,7 @@ fun SwipeScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
             val current = remaining.getOrNull(0)
             val next = remaining.getOrNull(1)
             if (current == null) {
-                EmptyMessage("Repaso terminado", if (toDelete.isEmpty()) "No queda nada por revisar aquí." else "Pulsa «Borrar» para mandar a la papelera lo que apartaste.")
+                EmptyMessage(icon = TrophyIcon, title = "Repaso terminado", text = if (toDelete.isEmpty()) "No queda nada por revisar aquí." else "Pulsa «Borrar» para mandar a la papelera lo que apartaste.")
             } else {
                 if (next != null) {
                     Card(next, Modifier.graphicsLayer { scaleX = 0.94f; scaleY = 0.94f; translationY = 24f; alpha = 0.6f })

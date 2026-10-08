@@ -51,6 +51,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.sp
 import com.lumi.galeria.LumiViewModel
 import com.lumi.galeria.ReviewKind
@@ -94,6 +95,15 @@ fun SpaceScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                     )
                 }
                 Spacer(Modifier.height(8.dp))
+                val dark = remember(state.items, state.index) {
+                    state.items.filter { item ->
+                        !item.isVideo && !item.isScreenshot && !item.isGif && !item.name.contains("_mejorada") &&
+                            state.index[item.id]?.let { it.color != 0 && com.lumi.galeria.data.isDark(it.color) } == true
+                    }
+                }
+                if (dark.isNotEmpty()) SpaceRow("Se pueden mejorar", dark, "Lumi Auto") { vm.open(Screen.Enhance) }
+                val sensitive = remember(state.items, state.sensitive) { state.items.filter { it.id in state.sensitive } }
+                if (sensitive.isNotEmpty()) SpaceRow("Fotos con datos personales", sensitive, "Proteger") { vm.open(Screen.Sensitive) }
                 SpaceRow("Repaso rápido", state.items.filter { it.isScreenshot }.take(3), "Deslizar") { vm.open(Screen.SwipeReview) }
                 SpaceRow(
                     "Papelera",
@@ -273,7 +283,7 @@ fun ReviewScreen(screen: Screen.Review, state: UiState, vm: LumiViewModel, actio
         ScreenHeader(kind.title, kind.hint, onBack = { vm.back() })
         when {
             grouped && groups == null -> EmptyMessage("Comprobando…", "Lumi está comparando cada copia con su original.", Modifier.weight(1f))
-            all.isEmpty() -> EmptyMessage("Nada que revisar", "Aquí no queda nada.", Modifier.weight(1f))
+            all.isEmpty() -> EmptyMessage("Nada que revisar", "Aquí no queda nada.", Modifier.weight(1f), icon = ShrinkIcon)
             else -> {
                 // Atajos para elegir muchas de golpe, y para soltarlas todas.
                 Row(
@@ -459,7 +469,7 @@ fun TrashScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
             onBack = { vm.back() },
         )
         if (items.isEmpty()) {
-            EmptyMessage("La papelera está vacía", "Lo que borres se guarda aquí 30 días por si te arrepientes.", Modifier.weight(1f))
+            EmptyMessage("La papelera está vacía", "Lo que borres se guarda aquí 30 días por si te arrepientes.", Modifier.weight(1f), icon = TrashIcon)
         } else {
             Text(
                 "Cada elemento se borra solo, para siempre, cuando se cumplen sus 30 días. En rojo, los que se van en tres días o menos.",
@@ -498,4 +508,92 @@ fun TrashScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
             }
         }
     }
+}
+
+/**
+ * Fotos oscuras o apagadas que Lumi Auto puede mejorar. Nada viene elegido; cada mejora se guarda
+ * como copia junto a la original, que no se toca. Manteniendo pulsada una se ve el antes y el después.
+ */
+@Composable
+fun EnhanceScreen(state: UiState, vm: LumiViewModel) {
+    val dark = remember(state.items, state.index) {
+        state.items.filter { item ->
+            !item.isVideo && !item.isScreenshot && !item.isGif && !item.name.contains("_mejorada") &&
+                state.index[item.id]?.let { it.color != 0 && com.lumi.galeria.data.isDark(it.color) } == true
+        }
+    }
+    var selection by remember { mutableStateOf(emptySet<Long>()) }
+    var preview by remember { mutableStateOf<MediaItem?>(null) }
+    val chosen = remember(dark, selection) { dark.filter { it.id in selection } }
+
+    Column(Modifier.fillMaxSize().background(Lumi.Bg).navigationBarsPadding()) {
+        ScreenHeader("Se pueden mejorar", "Fotos oscuras o apagadas", onBack = { vm.back() })
+        if (dark.isEmpty()) {
+            EmptyMessage("Nada que mejorar", "No hay fotos oscuras o apagadas, o aún se están revisando.", Modifier.weight(1f), icon = SparkIcon)
+            return@Column
+        }
+        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(countText(dark.size, "foto", "fotos"), style = SmallStyle, modifier = Modifier.weight(1f))
+            if (selection.isNotEmpty()) ChipButton("Quitar selección") { selection = emptySet() }
+            ChipButton("Elegir todas") { selection = dark.mapTo(HashSet()) { it.id } }
+        }
+        PickGrid(
+            items = dark,
+            selection = selection,
+            onToggle = { id -> selection = if (id in selection) selection - id else selection + id },
+            modifier = Modifier.weight(1f),
+            onOpen = { preview = it },
+        )
+        Text(
+            "Toca para elegir. Mantén pulsada para ver el antes y el después. La original no se toca: la mejorada se guarda como copia.",
+            style = SmallStyle, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 6.dp),
+        )
+        val progress = vm.making
+        PillButton(
+            when {
+                progress != null -> "Mejorando… $progress %"
+                chosen.isEmpty() -> "Elige las que quieras mejorar"
+                else -> "Mejorar " + countText(chosen.size, "foto", "fotos")
+            },
+            onClick = { vm.enhancePhotos(chosen) },
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            enabled = chosen.isNotEmpty() && progress == null,
+        )
+    }
+    preview?.let { item -> BeforeAfter(item) { preview = null } }
+}
+
+@Composable
+private fun BeforeAfter(item: MediaItem, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val pair by produceState<Pair<android.graphics.Bitmap, android.graphics.Bitmap>?>(null, item.id) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            runCatching {
+                val before = context.contentResolver.loadThumbnail(item.uri, android.util.Size(1024, 1024), null)
+                val copy = before.copy(android.graphics.Bitmap.Config.ARGB_8888, true)
+                before to com.lumi.galeria.data.lumiAuto(copy)
+            }.getOrNull()
+        }
+    }
+    var showAfter by remember { mutableStateOf(true) }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Lumi.Surface,
+        title = { Text(if (showAfter) "Después" else "Antes", style = HeadingStyle) },
+        text = {
+            Box(Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(16.dp)).background(Lumi.Bg).clickable { showAfter = !showAfter }, contentAlignment = Alignment.Center) {
+                val shown = pair?.let { if (showAfter) it.second else it.first }
+                if (shown == null) Text("Preparando…", style = SmallStyle)
+                else androidx.compose.foundation.Image(
+                    shown.asImageBitmap(), null, Modifier.fillMaxSize(),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                    filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
+                )
+            }
+        },
+        confirmButton = {
+            Text(if (showAfter) "Ver antes" else "Ver después", style = LabelStyle, color = Lumi.Accent, modifier = Modifier.clip(CircleShape).clickable { showAfter = !showAfter }.padding(12.dp))
+        },
+        dismissButton = { Text("Cerrar", style = LabelStyle, color = Lumi.Muted, modifier = Modifier.clip(CircleShape).clickable(onClick = onDismiss).padding(12.dp)) },
+    )
 }

@@ -118,7 +118,7 @@ fun HiddenFoldersScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                 PillButton("Ya lo he concedido", { allowed = Environment.isExternalStorageManager() }, Modifier.fillMaxWidth(), primary = false)
             }
             state.scanningHidden || folders == null -> EmptyMessage("Buscando…", "Lumi está recorriendo las carpetas del teléfono.")
-            folders.isEmpty() -> EmptyMessage("No hay nada escondido", "Ninguna carpeta oculta tiene fotos ni vídeos.")
+            folders.isEmpty() -> EmptyMessage("No hay nada escondido", "Ninguna carpeta oculta tiene fotos ni vídeos.", icon = FolderIcon)
             else -> LazyColumn(Modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 item {
                     Text(

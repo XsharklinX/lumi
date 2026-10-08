@@ -37,20 +37,24 @@ object Lumi {
     private var accent by mutableStateOf(AccentColor.LILAC)
     /** Fondo negro del todo en el tema oscuro, para pantallas OLED. */
     private var black by mutableStateOf(false)
+    /** Contraste alto: textos secundarios y líneas más marcados. */
+    var contrast by mutableStateOf(false)
+        private set
 
     val Bg get() = if (!dark) Color(0xFFF6F5FA) else if (black) Color.Black else Color(0xFF0E0E13)
     val Surface get() = if (!dark) Color(0xFFE9E6F3) else if (black) Color(0xFF16161B) else Color(0xFF1C1B24)
-    val Line get() = if (dark) Color(0xFF2A2933) else Color(0xFFD9D6E6)
+    val Line get() = if (contrast) (if (dark) Color(0xFF6E6B80) else Color(0xFF8A8799)) else if (dark) Color(0xFF2A2933) else Color(0xFFD9D6E6)
     val Ink get() = if (dark) Color(0xFFF4F3F8) else Color(0xFF15131F)
-    val Muted get() = if (dark) Color(0xFFA19FB2) else Color(0xFF5D5A6E)
+    val Muted get() = if (contrast) (if (dark) Color(0xFFDAD8E6) else Color(0xFF34313F)) else if (dark) Color(0xFFA19FB2) else Color(0xFF5D5A6E)
     val Accent get() = if (dark) accent.dark else accent.light
     val OnAccent get() = if (dark) Color(0xFF17131F) else Color(0xFFFFFFFF)
     val Danger get() = if (dark) Color(0xFFFF8A80) else Color(0xFFC23B2E)
 
-    internal fun apply(isDark: Boolean, color: AccentColor, pureBlack: Boolean) {
+    internal fun apply(isDark: Boolean, color: AccentColor, pureBlack: Boolean, highContrast: Boolean = false) {
         dark = isDark
         accent = color
         black = pureBlack
+        contrast = highContrast
     }
 }
 
@@ -64,19 +68,20 @@ private fun variable(res: Int, vararg weights: Int) = FontFamily(
 val Display = variable(R.font.schibsted_grotesk, 700, 900)
 val Body = variable(R.font.figtree, 400, 500, 600, 700)
 
-private class Styles(val dark: Boolean) {
+private class Styles(val dark: Boolean, val contrast: Boolean) {
     val title = TextStyle(fontFamily = Display, fontWeight = FontWeight.Black, fontSize = 30.sp, letterSpacing = (-0.6).sp, color = Lumi.Ink)
     val heading = TextStyle(fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Lumi.Ink)
     val label = TextStyle(fontFamily = Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Lumi.Ink)
     val small = TextStyle(fontFamily = Body, fontWeight = FontWeight.Medium, fontSize = 12.sp, color = Lumi.Muted)
 }
 
-private var styles = Styles(true)
+private var styles = Styles(true, false)
 
 /** Los estilos solo se rehacen al cambiar de tema; así cada texto no fabrica el suyo al pintarse. */
 private fun current(): Styles {
     val dark = Lumi.dark
-    if (styles.dark != dark) styles = Styles(dark)
+    val contrast = Lumi.contrast
+    if (styles.dark != dark || styles.contrast != contrast) styles = Styles(dark, contrast)
     return styles
 }
 
@@ -86,13 +91,21 @@ val LabelStyle get() = current().label
 val SmallStyle get() = current().small
 
 @Composable
-fun LumiTheme(mode: ThemeMode, accent: AccentColor, pureBlack: Boolean, content: @Composable () -> Unit) {
+fun LumiTheme(
+    mode: ThemeMode,
+    accent: AccentColor,
+    pureBlack: Boolean,
+    /** Tamaño de letra de Lumi, encima del que tenga el teléfono. */
+    textScale: Float = 1f,
+    highContrast: Boolean = false,
+    content: @Composable () -> Unit,
+) {
     val dark = when (mode) {
         ThemeMode.SYSTEM -> isSystemInDarkTheme()
         ThemeMode.LIGHT -> false
         ThemeMode.DARK -> true
     }
-    Lumi.apply(dark, accent, pureBlack)
+    Lumi.apply(dark, accent, pureBlack, highContrast)
     val scheme = if (dark) {
         darkColorScheme(
             primary = Lumi.Accent, onPrimary = Lumi.OnAccent, background = Lumi.Bg, onBackground = Lumi.Ink,
@@ -104,7 +117,12 @@ fun LumiTheme(mode: ThemeMode, accent: AccentColor, pureBlack: Boolean, content:
             surface = Lumi.Surface, onSurface = Lumi.Ink, surfaceContainerLow = Lumi.Surface, onSurfaceVariant = Lumi.Muted,
         )
     }
-    MaterialTheme(colorScheme = scheme) {
-        ProvideTextStyle(TextStyle(fontFamily = Body, fontSize = 14.sp, color = Lumi.Ink), content)
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    androidx.compose.runtime.CompositionLocalProvider(
+        androidx.compose.ui.platform.LocalDensity provides androidx.compose.ui.unit.Density(density.density, density.fontScale * textScale),
+    ) {
+        MaterialTheme(colorScheme = scheme) {
+            ProvideTextStyle(TextStyle(fontFamily = Body, fontSize = 14.sp, color = Lumi.Ink), content)
+        }
     }
 }

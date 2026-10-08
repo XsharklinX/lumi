@@ -146,7 +146,7 @@ fun MotionScreen(item: MediaItem, vm: LumiViewModel, onClose: () -> Unit) {
                 Text(if (trails) "Estela de luces" else "Larga exposición", style = HeadingStyle, color = Color.White)
                 androidx.compose.foundation.Image(
                     made.asImageBitmap(), null, Modifier.weight(1f).fillMaxWidth(),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit, filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
                 )
                 Text(
                     if (trails) "Lo más claro de cada instante: las luces que se mueven dejan su rastro." else "Los fotogramas superpuestos: el agua y lo que se mueve se vuelven seda.",

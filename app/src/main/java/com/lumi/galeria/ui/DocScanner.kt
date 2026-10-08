@@ -19,18 +19,20 @@ import com.lumi.galeria.LumiViewModel
  * Devuelve la función que lo abre.
  */
 @Composable
-fun rememberDocumentScanner(vm: LumiViewModel): () -> Unit {
+fun rememberDocumentScanner(vm: LumiViewModel, card: Boolean = false): () -> Unit {
     val context = LocalContext.current
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode != Activity.RESULT_OK) return@rememberLauncherForActivityResult
         val scan = GmsDocumentScanningResult.fromActivityResultIntent(result.data) ?: return@rememberLauncherForActivityResult
-        vm.saveScan(scan.pages?.map { it.imageUri }.orEmpty(), scan.pdf?.uri)
+        val pages = scan.pages?.map { it.imageUri }.orEmpty()
+        if (card) vm.scanCard(pages) else vm.saveScan(pages, scan.pdf?.uri)
     }
-    val scanner = remember {
+    val scanner = remember(card) {
         GmsDocumentScanning.getClient(
             GmsDocumentScannerOptions.Builder()
                 .setGalleryImportAllowed(true)
-                .setPageLimit(30)
+                // Una tarjeta tiene dos caras.
+                .setPageLimit(if (card) 2 else 30)
                 .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG, GmsDocumentScannerOptions.RESULT_FORMAT_PDF)
                 .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
                 .build(),

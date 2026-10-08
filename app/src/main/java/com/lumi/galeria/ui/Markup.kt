@@ -346,6 +346,7 @@ fun MarkupScreen(screen: Screen.Markup, state: UiState, vm: LumiViewModel) {
                             image,
                             dstOffset = IntOffset(a.left.roundToInt(), a.top.roundToInt()),
                             dstSize = IntSize(a.width.roundToInt(), a.height.roundToInt()),
+                            filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
                         )
                         val canvas = drawContext.canvas.nativeCanvas
                         canvas.save()

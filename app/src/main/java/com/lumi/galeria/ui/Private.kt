@@ -75,6 +75,7 @@ fun VaultScreen(state: UiState, vm: LumiViewModel) {
                 "Aquí no hay nada todavía",
                 "Elige fotos en la galería y usa «Mover a la carpeta privada». Se guardan cifradas y dejan de verse en la galería, la búsqueda y los recuerdos.",
                 Modifier.weight(1f),
+                icon = LockLineIcon,
             )
         } else {
             LazyVerticalGrid(

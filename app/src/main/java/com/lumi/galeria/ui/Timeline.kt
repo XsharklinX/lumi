@@ -81,6 +81,7 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: LazyGridState, link: GridLink) {
+    val scanDocument = rememberDocumentScanner(vm)
     val level = state.level
     // En la vista de día las columnas las elige el usuario pellizcando.
     val columns = if (level == Level.DAY) state.dayColumns else level.columns
@@ -207,9 +208,9 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
         when {
             state.loading -> Unit
             cells.isEmpty() -> if (state.filter == TileFilter.ALL) {
-                EmptyMessage("Aún no hay fotos", "Las fotos y los vídeos de tu teléfono aparecerán aquí.")
+                EmptyMessage("Aún no hay fotos", "Las fotos y los vídeos de tu teléfono aparecerán aquí.", icon = PictureIcon)
             } else {
-                EmptyMessage("Nada con este filtro", "Toca «Todo» para volver a ver la biblioteca completa.")
+                EmptyMessage("Nada con este filtro", "Toca «Todo» para volver a ver la biblioteca completa.", icon = SearchLineIcon)
             }
             else -> LazyVerticalGrid(
                 columns = GridCells.Fixed(scaledColumns(columns)),
@@ -439,7 +440,7 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                     style = LabelStyle,
                     modifier = Modifier.clip(CircleShape).background(Lumi.Surface).padding(horizontal = 18.dp, vertical = 12.dp),
                 )
-                selection.isEmpty() -> if (!LocalWide.current) Dock(Screen.Timeline, vm::switchTab)
+                selection.isEmpty() -> if (!LocalWide.current) Dock(Screen.Timeline, vm::switchTab, onCamera = actions.camera, onScan = scanDocument)
                 else -> SelectionBar(state.tiles.filter { it.id in selection }, state, vm, actions) { selection = emptySet() }
             }
         }

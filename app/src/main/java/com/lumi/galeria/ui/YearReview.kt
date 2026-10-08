@@ -228,12 +228,12 @@ fun YearReviewScreen(screen: Screen.YearReview, state: UiState, vm: LumiViewMode
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 s.bestMonth?.let { month ->
-                    StatCard(month.name.substringBefore(' '), "tu mes con más fotos · ${formatCount(month.items.size)}", month.items.first(), Modifier.weight(1f)) {
+                    StatCard(month.name.substringBefore(' '), "tu mes con más fotos · ${formatCount(month.items.size)}", state.coverOf(month.items), Modifier.weight(1f)) {
                         openGroup(month.name, month.items)
                     }
                 }
                 s.bestDay?.let { (day, items) ->
-                    StatCard(dayTitle(day), "tu día con más fotos · ${formatCount(items.size)}", items.first(), Modifier.weight(1f)) {
+                    StatCard(dayTitle(day), "tu día con más fotos · ${formatCount(items.size)}", state.coverOf(items), Modifier.weight(1f)) {
                         openGroup(dayTitle(day), items)
                     }
                 }

@@ -356,3 +356,17 @@ private fun saveGif(context: Context, bytes: ByteArrayOutputStream, name: String
     if (!saved) runCatching { resolver.delete(target, null, null) }
     return saved
 }
+
+/** Guarda [frames] (todas del mismo tamaño) como GIF en Pictures/Lumi. [delayCs]: centésimas por fotograma. */
+suspend fun saveFramesGif(context: Context, frames: List<Bitmap>, delayCs: Int, name: String, onProgress: (Int) -> Unit): Boolean {
+    if (frames.size < 2) return false
+    val bytes = ByteArrayOutputStream()
+    val gif = GifWriter(bytes, frames[0].width, frames[0].height)
+    frames.forEachIndexed { i, frame ->
+        coroutineContext.ensureActive()
+        gif.frame(frame, delayCs)
+        onProgress((i + 1) * 95 / frames.size)
+    }
+    gif.finish()
+    return saveGif(context, bytes, name).also { onProgress(100) }
+}

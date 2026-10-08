@@ -149,8 +149,11 @@ fun search(
     }
     val tokens = plain.trim().split(' ').filter { it.length >= 2 && it !in STOP }.map { FROM_ENGLISH[it] ?: it }
     if (tokens.isEmpty() && cities.isEmpty()) return emptyList()
+    if (tokens.all { it == "solo" || it == "sola" || it == "only" || it == "alone" } && cities.isEmpty()) return emptyList()
+    // «solo Lucía», «sola», «only»: en la foto no sale nadie más.
+    val alone = tokens.any { it == "solo" || it == "sola" || it == "only" || it == "alone" }
     val filters = tokens.filter(::isFilterWord)
-    val words = tokens - filters.toSet()
+    val words = tokens - filters.toSet() - setOf("solo", "sola", "only", "alone")
 
     val zone = ZoneId.systemDefault()
     val today = LocalDate.now(zone)
@@ -199,14 +202,16 @@ fun search(
                 else -> date.year == token.toInt()
             }
         }
-        passes && words.all { literal(item, entry, it) }
+        passes && words.all { literal(item, entry, it) } && (!alone || people[item.id]?.size == 1)
     }
     return hits
 }
 
 // ---------- Álbumes automáticos ----------
 
-class AutoAlbum(val key: String, val title: String, val subtitle: String, val items: List<MediaItem>, val isTrip: Boolean)
+class AutoAlbum(val key: String, val title: String, val subtitle: String, val items: List<MediaItem>, val isTrip: Boolean, val cover: MediaItem = items.first()) {
+    fun withCover(item: MediaItem) = AutoAlbum(key, title, subtitle, items, isTrip, item)
+}
 
 private class Thing(val key: String, val title: String, vararg val labels: String)
 
@@ -312,7 +317,7 @@ fun buildTrips(items: List<MediaItem>, index: Map<Long, IndexEntry>): List<AutoA
 
 // ---------- Recuerdos ----------
 
-class Memory(val title: String, val items: List<MediaItem>)
+class Memory(val title: String, val items: List<MediaItem>, val cover: MediaItem = items.first())
 
 /** Fotos de estos mismos días en años anteriores; gana el año más cercano que tenga alguna. */
 fun buildMemory(items: List<MediaItem>): Memory? {
@@ -367,12 +372,12 @@ data class Filters(
     val size: SizeRange? = null,
     /** JPG, HEIC, PNG, DNG, MP4… */
     val format: String? = null,
-    /** Nombre de una persona. */
-    val person: String? = null,
+    /** Personas que tienen que salir todas en la foto. */
+    val people: Set<String> = emptySet(),
 ) {
     val isEmpty: Boolean
         get() = kinds.isEmpty() && year == null && month == null && place == null && album == null && thing == null &&
-            camera == null && size == null && format == null && person == null
+            camera == null && size == null && format == null && people.isEmpty()
 }
 
 /** Una opción de un filtro, con las fotos que quedarían al elegirla. */
@@ -489,7 +494,7 @@ fun find(
         val okSize = filters.size == null || size == filters.size
         val okFormat = filters.format == null || format == filters.format
         val names = people[item.id].orEmpty()
-        val okPerson = filters.person == null || filters.person in names
+        val okPerson = names.containsAll(filters.people)
         val failed = (if (okKind) 0 else 1) + (if (okYear) 0 else 1) + (if (okMonth) 0 else 1) +
             (if (okPlace) 0 else 1) + (if (okAlbum) 0 else 1) + (if (okThing) 0 else 1) +
             (if (okCamera) 0 else 1) + (if (okSize) 0 else 1) + (if (okFormat) 0 else 1) + (if (okPerson) 0 else 1)
@@ -509,7 +514,7 @@ fun find(
         if ((failed == 0 || !okCamera) && camera.isNotEmpty()) cameraCount.merge(camera, 1, Int::plus)
         if ((failed == 0 || !okSize) && size != null) sizeCount[size.ordinal]++
         if ((failed == 0 || !okFormat) && format.isNotEmpty()) formatCount.merge(format, 1, Int::plus)
-        if (failed == 0 || !okPerson) names.forEach { personCount.merge(it, 1, Int::plus) }
+        if (failed == 0 || !okPerson) names.forEach { if (it !in filters.people) personCount.merge(it, 1, Int::plus) }
     }
 
     return Found(

@@ -57,6 +57,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.HorizontalPager
@@ -231,6 +232,18 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
     val scope = rememberCoroutineScope()
     var tint by remember { mutableStateOf(DefaultTint) }
     LaunchedEffect(current.id) { tint = withContext(Dispatchers.IO) { tintOf(context, current) } }
+    // Fotos Ultra HDR: la pantalla pasa a HDR para enseñar su brillo real (Android 14 o posterior).
+    LaunchedEffect(current.id) {
+        if (android.os.Build.VERSION.SDK_INT < 34) return@LaunchedEffect
+        val hdr = !current.isVideo && withContext(Dispatchers.IO) { com.lumi.galeria.data.isUltraHdr(context, current.uri) }
+        (context as? android.app.Activity)?.window?.colorMode =
+            if (hdr) android.content.pm.ActivityInfo.COLOR_MODE_HDR else android.content.pm.ActivityInfo.COLOR_MODE_DEFAULT
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            if (android.os.Build.VERSION.SDK_INT >= 34) (context as? android.app.Activity)?.window?.colorMode = android.content.pm.ActivityInfo.COLOR_MODE_DEFAULT
+        }
+    }
     val background by animateColorAsState(tint.background, tween(400), label = "fondo")
     val accent by animateColorAsState(tint.accent, tween(400), label = "acento")
 
@@ -260,6 +273,19 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
     var motionOpen by remember { mutableStateOf(false) }
     // Texto de la foto marcado encima de ella, para tocarlo; null si no se está viendo.
     var textPage by remember { mutableStateOf<com.lumi.galeria.data.TextPage?>(null) }
+    // Caras de la foto: quién es cada una. Con [faceTags], sus nombres se ven encima de la foto.
+    var faceTags by remember { mutableStateOf(false) }
+    var naming by remember { mutableStateOf<com.lumi.galeria.data.Face?>(null) }
+    // Códigos leídos de la foto con «Leer el código QR».
+    var qrCodes by remember { mutableStateOf<List<com.google.mlkit.vision.barcode.common.Barcode>>(emptyList()) }
+    // Cara mantenida pulsada en «En esta foto»: se puede decir que no es esa persona.
+    var faceMenu by remember { mutableStateOf<Pair<com.lumi.galeria.data.Face, com.lumi.galeria.data.Person?>?>(null) }
+    val photoFaces by produceState(emptyList<Pair<com.lumi.galeria.data.Face, com.lumi.galeria.data.Person?>>(), current.id, state.people) {
+        value = withContext(Dispatchers.Default) {
+            val byGroup = state.people.associateBy { it.group.id }
+            vm.facesOf(current.id).sortedBy { it.left }.map { it to byGroup[it.group] }
+        }
+    }
     val hasText = !current.isVideo && (state.index[current.id]?.text?.length ?: 0) >= 20
     fun showText() {
         vm.readTextPage(current) { page ->
@@ -272,6 +298,7 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
         motionHold = false
         motionOpen = false
         textPage = null
+        faceTags = false
     }
 
     // --- Abrir desde la miniatura, cerrar hacia ella y arrastrar hacia abajo ---
@@ -583,6 +610,11 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
 
         // Subtítulos: por encima de la imagen, y más arriba cuando están los controles.
         textPage?.let { page -> LiveText(page) { textPage = null } }
+        if (faceTags && photoFaces.isNotEmpty()) {
+            FaceTags(current, photoFaces, onClose = { faceTags = false }) { face, person ->
+                if (person?.name != null) leaveTo(Screen.Person(person.key)) else naming = face
+            }
+        }
 
         if (current.isVideo && subsOn && cues.isNotEmpty() && settled) {
             cueAt(cues, position - subShift)?.let { cue ->
@@ -635,6 +667,14 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                 value = withContext(Dispatchers.Default) { relatedTo(current, state) }
             }
             InfoPanel(
+                faces = photoFaces,
+                onFace = { face, person -> if (person?.name != null) leaveTo(Screen.Person(person.key)) else naming = face },
+                onFaceLong = { face, person -> faceMenu = face to person },
+                onFaceTags = {
+                    info = false
+                    chrome = false
+                    faceTags = true
+                },
                 related = related,
                 onRelated = { list, target -> vm.open(Screen.Viewer(Source.Ids(list.mapTo(HashSet()) { it.id }), target.id)) },
                 item = current,
@@ -1011,6 +1051,14 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
             },
             onCutout = { more = false; leaveTo(Screen.Cutout(current.id)) },
             onPortrait = { more = false; leaveTo(Screen.Portrait(current.id)) },
+            onQr = {
+                more = false
+                scope.launch {
+                    val found = readCodes(context, current.uri)
+                    if (found.isEmpty()) vm.say("No se ve ningún código en esta foto") else qrCodes = found
+                }
+            },
+            onSign = { more = false; leaveTo(Screen.SignDoc(current.uri.toString(), pdf = false, photoId = current.id)) },
             onScan = { more = false; scanDocument() },
             onCopyImage = {
                 more = false
@@ -1034,6 +1082,38 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
             onDismissRequest = { motionOpen = false },
             properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
         ) { MotionScreen(current, vm) { motionOpen = false } }
+    }
+    if (qrCodes.isNotEmpty()) {
+        androidx.compose.material3.ModalBottomSheet(onDismissRequest = { qrCodes = emptyList() }, containerColor = Lumi.Bg) {
+            Column(Modifier.padding(start = 14.dp, end = 14.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                qrCodes.forEach { QrCard(it) }
+            }
+        }
+    }
+    faceMenu?.let { (face, person) ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { faceMenu = null },
+            containerColor = Lumi.Surface,
+            title = { Text(person?.name ?: "¿Quién es?", style = HeadingStyle) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (person?.name != null) {
+                        Text("No es ${person.name}", style = LabelStyle.copy(fontSize = 15.sp), modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
+                            faceMenu = null
+                            vm.answerDoubt(com.lumi.galeria.data.Doubt(face, person, true), yes = false)
+                        }.padding(12.dp))
+                    }
+                    Text("Es otra persona…", style = LabelStyle.copy(fontSize = 15.sp), modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable {
+                        faceMenu = null
+                        naming = face
+                    }.padding(12.dp))
+                }
+            },
+            confirmButton = {},
+        )
+    }
+    naming?.let { face ->
+        NameDialog("", state.people.mapNotNull { it.name }.distinct(), { naming = null }) { name -> vm.faceIsNew(face, name) }
     }
     if (renaming) {
         RenameDialog(
@@ -1227,6 +1307,48 @@ private fun LiveText(page: com.lumi.galeria.data.TextPage, onClose: () -> Unit) 
     }
 }
 
+/** El estado de la app, para piezas pequeñas (como las caras) que lo necesitan sin pasarlo por todas partes. */
+val LocalState = androidx.compose.runtime.staticCompositionLocalOf { UiState() }
+
+/**
+ * Los nombres de quien sale, encima de cada cara de la foto. Tocar un nombre abre a esa persona;
+ * «¿Quién es?» deja ponérselo. Tocar fuera lo cierra.
+ */
+@Composable
+private fun FaceTags(
+    item: MediaItem,
+    faces: List<Pair<com.lumi.galeria.data.Face, com.lumi.galeria.data.Person?>>,
+    onClose: () -> Unit,
+    onTap: (com.lumi.galeria.data.Face, com.lumi.galeria.data.Person?) -> Unit,
+) {
+    BackHandler(onBack = onClose)
+    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize().clickable(onClick = onClose)) {
+        val aspect = item.shownWidth.toFloat() / item.shownHeight.coerceAtLeast(1)
+        val boxW = maxWidth
+        val boxH = maxHeight
+        val fitW = if (boxW / boxH > aspect) boxH * aspect else boxW
+        val fitH = fitW / aspect
+        val left = (boxW - fitW) / 2
+        val top = (boxH - fitH) / 2
+        faces.forEach { (face, person) ->
+            val x = left + fitW * face.left
+            val y = top + fitH * face.top
+            val w = fitW * (face.right - face.left)
+            val h = fitH * (face.bottom - face.top)
+            Box(
+                Modifier.offset(x, y).size(w, h).border(2.dp, Color.White.copy(alpha = 0.9f), RoundedCornerShape(10.dp)),
+            )
+            Text(
+                person?.name ?: "¿Quién es?",
+                style = LabelStyle, color = if (person?.name != null) Lumi.OnAccent else Color.White,
+                modifier = Modifier.offset(x, y + h + 4.dp).clip(CircleShape)
+                    .background(if (person?.name != null) Lumi.Accent else Color.Black.copy(alpha = 0.7f))
+                    .clickable { onTap(face, person) }.padding(horizontal = 10.dp, vertical = 5.dp),
+            )
+        }
+    }
+}
+
 /** Mando redondo de la fila del reproductor: un texto corto, encendido si cambia algo. */
 @Composable
 private fun RoundControl(label: String, description: String, on: Boolean, accent: Color, onClick: () -> Unit) {
@@ -1294,6 +1416,21 @@ private fun SeekPreview(item: MediaItem, atMs: Long, fraction: Float) {
         }
         if (shot != null) value = shot
     }
+    // Con el dedo quieto, el fotograma exacto (no el más cercano que se carga rápido).
+    val exact by produceState<Bitmap?>(null, item.id, atMs) {
+        delay(220)
+        value = withContext(Dispatchers.IO) {
+            synchronized(retriever) {
+                runCatching {
+                    if (!ready) {
+                        retriever.setDataSource(context, item.uri)
+                        ready = true
+                    }
+                    retriever.getScaledFrameAtTime(atMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST, 360, 360)
+                }.getOrNull()
+            }
+        }
+    }
     BoxWithConstraints(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
         val width = 150.dp
         Column(
@@ -1301,7 +1438,7 @@ private fun SeekPreview(item: MediaItem, atMs: Long, fraction: Float) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Box(Modifier.fillMaxWidth().aspectRatio(16f / 10f).clip(RoundedCornerShape(10.dp)).background(Color.Black).border(2.dp, Color.White, RoundedCornerShape(10.dp))) {
-                frame?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
+                (exact ?: frame)?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop, filterQuality = androidx.compose.ui.graphics.FilterQuality.High) }
             }
             Text(formatDuration(atMs), style = LabelStyle, color = Color.White, modifier = Modifier.padding(top = 4.dp))
         }
@@ -1449,12 +1586,20 @@ private fun ZoomablePhoto(item: MediaItem, active: Boolean, onTap: () -> Unit, o
             AsyncImage(Thumb(item.uri, 320, item.modified), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
         }
         AsyncImage(item.uri, null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
-        if (sharp && !item.isGif) {
+        // Ultra HDR: la foto con su mapa de ganancia, que la pantalla enseña con más brillo en las luces.
+        val context = LocalContext.current
+        val hdr by produceState<Bitmap?>(null, item.uri) {
+            if (android.os.Build.VERSION.SDK_INT >= 34 && !item.isGif && !item.isExternal) {
+                value = withContext(Dispatchers.IO) { com.lumi.galeria.data.decodeUltraHdr(context, item.uri) }
+            }
+        }
+        if (sharp && !item.isGif && hdr == null) {
             AsyncImage(
                 ImageRequest.Builder(LocalContext.current).data(item.uri).size(4096).memoryCacheKey("nitida:${item.uri}").build(),
                 null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit,
             )
         }
+        hdr?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit, filterQuality = androidx.compose.ui.graphics.FilterQuality.High) }
     }
 }
 
@@ -1592,6 +1737,8 @@ private fun MoreSheet(
     onText: () -> Unit,
     onCutout: () -> Unit,
     onPortrait: () -> Unit,
+    onQr: () -> Unit,
+    onSign: () -> Unit,
     onShrink: () -> Unit,
     onScan: () -> Unit,
     onCopyImage: () -> Unit,
@@ -1621,6 +1768,8 @@ private fun MoreSheet(
         if (motion) add(Triple(SlidesIcon, "Foto en movimiento: guardar el vídeo o un instante", onMotion))
         if (!item.isVideo) {
             add(Triple(PersonIcon, "Modo retrato: desenfocar el fondo", onPortrait))
+            add(Triple(ScanIcon, "Leer el código QR", onQr))
+            add(Triple(PenIcon, "Firmar", onSign))
             add(Triple(InfoIcon, "Información", onInfo))
             add(Triple(PenIcon, "Cambiar el nombre", onRename))
             add(Triple(LandscapeIcon, if (landscape) "Volver a vertical" else "Ver en horizontal", onScreen))
@@ -1696,8 +1845,13 @@ private fun QuickButton(icon: ImageVector, label: String, modifier: Modifier, on
  * parecidas. Una tira enseña las demás fotos de ese día. Se cierra deslizando hacia abajo,
  * tocando la foto o con «atrás».
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun InfoPanel(
+    faces: List<Pair<com.lumi.galeria.data.Face, com.lumi.galeria.data.Person?>>,
+    onFace: (com.lumi.galeria.data.Face, com.lumi.galeria.data.Person?) -> Unit,
+    onFaceLong: (com.lumi.galeria.data.Face, com.lumi.galeria.data.Person?) -> Unit,
+    onFaceTags: () -> Unit,
     related: List<Pair<String, List<MediaItem>>>,
     onRelated: (List<MediaItem>, MediaItem) -> Unit,
     item: MediaItem,
@@ -1763,6 +1917,33 @@ private fun InfoPanel(
             Text("Lumi ve", style = LabelStyle)
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 things.forEach { thing -> InfoChip(thing.replaceFirstChar { it.uppercase() }, Icons.Filled.Search) { onThing(thing) } }
+            }
+        }
+        if (faces.isNotEmpty()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("En esta foto", style = LabelStyle)
+                    Text("Mantén pulsada una cara si no es quien dice", style = SmallStyle)
+                }
+                Text(
+                    "Ver nombres en la foto", style = LabelStyle, color = Lumi.Accent,
+                    modifier = Modifier.clip(CircleShape).clickable(onClick = onFaceTags).padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+            }
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                faces.forEach { (face, person) ->
+                    Column(
+                        Modifier.width(64.dp).clip(RoundedCornerShape(12.dp)).combinedClickable(onClick = { onFace(face, person) }, onLongClick = { onFaceLong(face, person) }),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        FaceCircle(face, LocalState.current, 54.dp)
+                        Text(
+                            person?.name ?: "¿Quién es?", style = SmallStyle.copy(fontSize = 11.sp),
+                            color = if (person?.name == null) Lumi.Accent else Lumi.Ink, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
             }
         }
         if (related.isNotEmpty()) {

@@ -117,7 +117,7 @@ fun CutoutScreen(screen: Screen.Cutout, state: UiState, vm: LumiViewModel) {
             if (behind == Behind.CLEAR && result != null) Checkerboard()
             val shown = result
             when {
-                shown != null -> Image(shown.asImageBitmap(), null, Modifier.fillMaxSize().padding(8.dp), contentScale = ContentScale.Fit)
+                shown != null -> Image(shown.asImageBitmap(), null, Modifier.fillMaxSize().padding(8.dp), contentScale = ContentScale.Fit, filterQuality = androidx.compose.ui.graphics.FilterQuality.High)
                 problem != null -> Text(problem!!, style = SmallStyle.copy(fontSize = 15.sp, color = Lumi.Ink), modifier = Modifier.padding(24.dp))
                 else -> Text("Separando del fondo…", style = HeadingStyle)
             }
@@ -316,7 +316,7 @@ fun PortraitScreen(screen: Screen.Portrait, state: UiState, vm: LumiViewModel) {
         ) {
             val shown = if (compare) segmented?.photo else result
             when {
-                shown != null -> Image(shown.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+                shown != null -> Image(shown.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit, filterQuality = androidx.compose.ui.graphics.FilterQuality.High)
                 problem != null -> Text(problem!!, style = SmallStyle.copy(fontSize = 15.sp, color = Lumi.Ink), modifier = Modifier.padding(24.dp))
                 else -> Text("Buscando a quién enfocar…", style = HeadingStyle)
             }

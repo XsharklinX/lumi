@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Home
@@ -62,7 +63,8 @@ fun scaledColumns(columns: Int): Int = columns * LocalColumnScale.current
 fun isImmersive(screen: Screen): Boolean = when (screen) {
     is Screen.Viewer, is Screen.Editor, is Screen.Markup, is Screen.Cutout, is Screen.Wallpaper, is Screen.Rotate,
     is Screen.StoryView, is Screen.Collage, is Screen.Compare, is Screen.Gif, is Screen.Pdf,
-    Screen.SwipeReview, is Screen.VideoEditor, is Screen.Animate, is Screen.Portrait, is Screen.MemoryVideo -> true
+    Screen.SwipeReview, is Screen.VideoEditor, is Screen.Animate, is Screen.Portrait, is Screen.MemoryVideo,
+    Screen.Camera, is Screen.SignDoc, is Screen.Signature, Screen.Tour, is Screen.Show, Screen.CameraSettings -> true
     else -> false
 }
 
@@ -82,6 +84,7 @@ fun SidePane(state: UiState, vm: LumiViewModel, actions: Actions, current: Scree
         Text("Lumi", style = TitleStyle.copy(fontSize = 28.sp), modifier = Modifier.padding(start = 20.dp, top = 18.dp, bottom = 12.dp))
         PaneRow(Icons.Filled.Home, "Fotos", current == Screen.Timeline) { go(Screen.Timeline) }
         PaneRow(Icons.Filled.Search, "Buscar", current == Screen.Search) { vm.switchTab(Screen.Timeline); vm.openSearch() }
+        PaneRow(Icons.Filled.Edit, "Documentos", current == Screen.Documents) { vm.switchTab(Screen.Documents) }
         PaneRow(Icons.Filled.Favorite, "Favoritas", current == Screen.Favorites) { go(Screen.Favorites) }
         if (state.facesOn && state.people.isNotEmpty()) {
             PaneRow(Icons.Filled.Face, "Personas", current == Screen.People || current is Screen.Person) { go(Screen.People) }

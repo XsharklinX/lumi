@@ -187,7 +187,7 @@ fun VideoEditorScreen(screen: Screen.VideoEditor, state: UiState, vm: LumiViewMo
         BoxWithConstraints(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp).height(46.dp).clip(RoundedCornerShape(10.dp))) {
             Row(Modifier.fillMaxSize()) {
                 frames.forEach { frame ->
-                    Image(frame.asImageBitmap(), null, Modifier.weight(1f).fillMaxHeight(), contentScale = ContentScale.Crop)
+                    Image(frame.asImageBitmap(), null, Modifier.weight(1f).fillMaxHeight(), contentScale = ContentScale.Crop, filterQuality = androidx.compose.ui.graphics.FilterQuality.High)
                 }
             }
             val from = edit.startMs.toFloat() / length

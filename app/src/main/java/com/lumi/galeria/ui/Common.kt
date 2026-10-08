@@ -8,6 +8,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
@@ -169,6 +170,11 @@ fun tileBounds(grid: LazyGridState, container: LayoutCoordinates?, key: Any): Re
     return Rect(left, top, left + info.size.width, top + info.size.height)
 }
 
+/** El estado más reciente, para lo que se lee fuera de la composición (las descripciones de TalkBack). */
+object LocalStateHolder {
+    @Volatile var state: UiState? = null
+}
+
 /** [tone] es el color medio de la foto: se pinta en su hueco mientras llega la miniatura. */
 @Composable
 fun MediaThumb(item: MediaItem, px: Int, modifier: Modifier = Modifier, tone: Int = 0) {
@@ -220,8 +226,13 @@ fun PhotoTile(
 ) {
     Box(
         modifier.clip(RoundedCornerShape(corner)).semantics {
-            contentDescription = tr(if (item.isVideo) "Vídeo" else "Foto") + ", " + dayTitle(item.date) +
-                (if (favorite) ", " + tr("favorita") else "")
+            // TalkBack dice lo que Lumi sabe de la foto: qué sale, quién, dónde y cuándo.
+            val known = LocalStateHolder.state
+            val things = com.lumi.galeria.data.thingWords(known?.index?.get(item.id)).take(3).map { tr(it) }
+            val names = known?.namesByPhoto?.get(item.id).orEmpty().take(4)
+            val place = known?.places?.get(item.id)
+            contentDescription = (listOf(tr(if (item.isVideo) "Vídeo" else "Foto")) + things + names + listOfNotNull(place) + dayTitle(item.date))
+                .joinToString(", ") + (if (favorite) ", " + tr("favorita") else "")
             if (selected != null) this.selected = selected
         },
     ) {
@@ -298,31 +309,55 @@ fun PhotoTile(
     }
 }
 
+/**
+ * La barra de abajo: Fotos, Álbumes y Documentos, y al lado un botón redondo de cámara. Tocarlo
+ * abre la cámara; mantenerlo pulsado abre el escáner de documentos.
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun Dock(current: Screen, onSelect: (Screen) -> Unit, modifier: Modifier = Modifier) {
-    Row(
-        modifier
-            .clip(CircleShape)
-            .background(Lumi.Surface.copy(alpha = 0.96f))
-            .padding(5.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-    ) {
-        listOf(Screen.Timeline to "Fotos", Screen.Albums to "Álbumes").forEach { (screen, label) ->
-            val on = screen == current
-            Text(
-                label,
-                style = LabelStyle,
-                color = if (on) Lumi.OnAccent else Lumi.Muted,
-                modifier = Modifier
+fun Dock(current: Screen, onSelect: (Screen) -> Unit, modifier: Modifier = Modifier, onCamera: (() -> Unit)? = null, onScan: (() -> Unit)? = null) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            Modifier
+                .clip(CircleShape)
+                .background(Lumi.Surface.copy(alpha = 0.96f))
+                .padding(5.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            listOf(Screen.Timeline to "Fotos", Screen.Albums to "Álbumes", Screen.Documents to "Documentos").forEach { (screen, label) ->
+                val on = screen == current
+                Text(
+                    label,
+                    style = LabelStyle,
+                    color = if (on) Lumi.OnAccent else Lumi.Muted,
+                    maxLines = 1,
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(if (on) Lumi.Accent else Color.Transparent)
+                        .semantics {
+                            role = Role.Tab
+                            selected = on
+                        }
+                        .clickable { onSelect(screen) }
+                        .padding(horizontal = 13.dp, vertical = 12.dp),
+                )
+            }
+        }
+        if (onCamera != null) {
+            Box(
+                Modifier
+                    .size(50.dp)
+                    .shadow(6.dp, CircleShape)
                     .clip(CircleShape)
-                    .background(if (on) Lumi.Accent else Color.Transparent)
-                    .semantics {
-                        role = Role.Tab
-                        selected = on
-                    }
-                    .clickable { onSelect(screen) }
-                    .padding(horizontal = 26.dp, vertical = 12.dp),
-            )
+                    .background(Lumi.Accent)
+                    .combinedClickable(onClick = onCamera, onLongClick = onScan)
+                    .semantics { contentDescription = tr("Cámara. Mantén pulsado para escanear un documento") },
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(Modifier.size(20.dp).clip(CircleShape).border(2.5.dp, Lumi.OnAccent, CircleShape), contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(8.dp).clip(CircleShape).background(Lumi.OnAccent))
+                }
+            }
         }
     }
 }
@@ -482,13 +517,21 @@ fun PinOverlay(state: UiState, vm: LumiViewModel, onBiometric: (() -> Unit)?) {
     }
 }
 
+/**
+ * Lo que se ve cuando no hay nada: un dibujo de Lumi con [icon] (si lo hay), qué pasa y cómo
+ * llenarlo. Sin icono, solo el texto (para esperas cortas como «Comprobando…»).
+ */
 @Composable
-fun EmptyMessage(title: String, text: String, modifier: Modifier = Modifier) {
+fun EmptyMessage(title: String, text: String, modifier: Modifier = Modifier, icon: androidx.compose.ui.graphics.vector.ImageVector? = null) {
     Column(
-        modifier.fillMaxSize().padding(40.dp),
+        modifier.fillMaxSize().padding(horizontal = 32.dp, vertical = 24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        if (icon != null) {
+            LumiArt(icon, ART_PALETTE[(title.hashCode() and 0x7fffffff) % ART_PALETTE.size], Modifier.fillMaxWidth().height(190.dp).clip(RoundedCornerShape(28.dp)))
+            Spacer(Modifier.size(20.dp))
+        }
         Text(title, style = HeadingStyle, textAlign = TextAlign.Center)
         Spacer(Modifier.size(8.dp))
         Text(text, style = SmallStyle.copy(fontSize = 14.sp), textAlign = TextAlign.Center)
@@ -816,6 +859,12 @@ fun SelectionBar(chosen: List<MediaItem>, state: UiState, vm: LumiViewModel, act
                             onClear()
                         })
                         DropdownMenuItem({ Text("Copiar a un álbum") }, { menu = false; moving = false })
+                        DropdownMenuItem({ Text("Enseñar a alguien") }, {
+                            menu = false
+                            val photos = chosen.filter { !it.isVideo }
+                            if (photos.isEmpty()) vm.say("Elige alguna foto para enseñar") else vm.open(Screen.Show(photos.map { it.id }))
+                            onClear()
+                        })
                         DropdownMenuItem({ Text("Comparar dos fotos") }, {
                             menu = false
                             val photos = chosen.filter { !it.isVideo }

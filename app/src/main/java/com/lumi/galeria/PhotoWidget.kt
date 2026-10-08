@@ -1,54 +1,53 @@
 package com.lumi.galeria
 
-import android.app.PendingIntent
 import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
-import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
-import android.provider.MediaStore
-import android.util.Size
-import android.widget.RemoteViews
+import android.os.Bundle
+import com.lumi.galeria.widget.Widgets
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
-/** Widget de inicio: enseña una de tus favoritas (o una foto reciente) y cambia cada hora. */
+/** Para pintar fuera del hilo principal: leer fotos y recortarlas lleva su tiempo. */
+internal val widgetScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+/** Hace [work] fuera del hilo principal sin que Android dé el aviso por terminado antes de tiempo. */
+internal fun android.content.BroadcastReceiver.inBackground(work: () -> Unit) {
+    val pending = goAsync()
+    widgetScope.launch {
+        try {
+            runCatching(work)
+        } finally {
+            pending.finish()
+        }
+    }
+}
+
+/**
+ * Widget de fotos: favoritas, un álbum, una persona o recuerdos, lo que se eligió al ponerlo. Cambia
+ * cada hora, cada tres o cada día, o al tocar la flecha; tocar la foto la abre en Lumi.
+ */
 class PhotoWidget : AppWidgetProvider() {
-    override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
-        val uri = pickPhoto(context)
-        val bitmap = uri?.let { runCatching { context.contentResolver.loadThumbnail(it, Size(640, 640), null) }.getOrNull() }
-        for (id in ids) {
-            val views = RemoteViews(context.packageName, R.layout.widget_photo)
-            if (bitmap != null) views.setImageViewBitmap(R.id.photo, bitmap)
-            val open = Intent(context, MainActivity::class.java).apply {
-                if (uri != null) {
-                    action = Intent.ACTION_VIEW
-                    setDataAndType(uri, "image/*")
-                }
-            }
-            views.setOnClickPendingIntent(
-                R.id.photo,
-                PendingIntent.getActivity(context, id, open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE),
-            )
-            manager.updateAppWidget(id, views)
+    override fun onReceive(context: Context, intent: Intent) {
+        if (intent.action == Widgets.ACTION_NEXT) {
+            val id = intent.getIntExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, AppWidgetManager.INVALID_APPWIDGET_ID)
+            if (id != AppWidgetManager.INVALID_APPWIDGET_ID) inBackground { Widgets.render(context, AppWidgetManager.getInstance(context), id, memoryWidget = false, advance = true) }
+            return
         }
+        super.onReceive(context, intent)
     }
 
-    private fun pickPhoto(context: Context): Uri? {
-        val images = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        val favorites = context.getSharedPreferences("lumi", Context.MODE_PRIVATE)
-            .getStringSet("favorites", emptySet()).orEmpty().mapNotNull { it.toLongOrNull() }
-        val candidates = ArrayList<Long>()
-        runCatching {
-            context.contentResolver.query(
-                images, arrayOf(MediaStore.Images.Media._ID), null, null, "${MediaStore.Images.Media.DATE_MODIFIED} DESC",
-            )?.use { c ->
-                val alive = HashSet<Long>()
-                while (c.moveToNext() && (alive.size < 2000)) alive += c.getLong(0)
-                // Las favoritas pueden ser vídeos o haberse borrado: solo valen las fotos que siguen ahí.
-                candidates += favorites.filter { it in alive }
-                if (candidates.isEmpty()) candidates += alive.take(40)
-            }
-        }
-        return candidates.randomOrNull()?.let { ContentUris.withAppendedId(images, it) }
+    override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
+        inBackground { ids.forEach { Widgets.render(context, manager, it, memoryWidget = false, advance = false) } }
     }
+
+    override fun onAppWidgetOptionsChanged(context: Context, manager: AppWidgetManager, id: Int, newOptions: Bundle) {
+        // Cambió de tamaño: la foto se vuelve a recortar a la medida nueva.
+        inBackground { Widgets.render(context, manager, id, memoryWidget = false, advance = false) }
+    }
+
+    override fun onDeleted(context: Context, ids: IntArray) = Widgets.forget(context, ids)
 }

@@ -4,6 +4,77 @@ Una entrada por versión, la más reciente arriba. Cada idioma admite 500 caract
 El bloque de cada versión se pega tal cual en «Notas de la versión»: las etiquetas `<es-ES>` y
 `<en-US>` son las que usa Play Console para separar los idiomas.
 
+## 1.1.0 (código 1100)
+
+```
+<es-ES>
+• Cámara Lumi renovada: dispara sin esperar, Pro, vídeo 4K, timelapse y Retrato en cualquier móvil.
+• Elígela como cámara del teléfono, también desde el bloqueo.
+• Widgets nuevos: cámara, mosaico y atajos; los de fotos, rehechos.
+• Detecta fotos con tu DNI o tarjetas y las protege.
+• Carpetas de álbumes, fondo que cambia solo y fotos Ultra HDR.
+• Letra más grande, contraste alto y TalkBack.
+• Recorrido nuevo, sin tus fotos.
+</es-ES>
+<en-US>
+• Revamped Lumi Camera: no waiting between shots, Pro, 4K video, timelapse and Portrait on any phone.
+• Make it your phone's camera, even from the lock screen.
+• New widgets: camera, mosaic and shortcuts; photo widgets rebuilt.
+• Spots photos of your ID or cards and protects them.
+• Album folders, auto-changing wallpaper and Ultra HDR photos.
+• Larger text, high contrast and TalkBack.
+• A new tour, without your photos.
+</en-US>
+```
+
+## 1.0.0 (código 1000)
+
+```
+<es-ES>
+• Nueva Cámara Lumi: Lumi Auto aclara y da color a cada foto; Noche y HDR mezclan varias fotos.
+• Disparo inteligente al sonreír, ráfaga que elige la mejor, filtros en vivo y modo Pro.
+• Lector QR con historial, avisos de enlaces dudosos y wifi en un toque.
+• Nueva pestaña Documentos: escanea, firma y edita PDF, y guarda el DNI en una hoja.
+• Mejora en lote tus fotos oscuras.
+• Personas: desliza para unir y las caras seguras se añaden solas.
+• Recorrido por todo lo que hace Lumi.
+</es-ES>
+<en-US>
+• New Lumi Camera: Lumi Auto brightens and adds color to every photo; Night and HDR blend several shots.
+• Smart shutter on smiles, burst that picks the best, live filters and Pro mode.
+• QR scanner with history, shady-link warnings and one-tap Wi-Fi.
+• New Documents tab: scan, sign and edit PDFs, and fit your ID on one page.
+• Batch-enhance your dark photos.
+• People: swipe to merge, and sure matches are added automatically.
+• A tour of everything Lumi does.
+</en-US>
+```
+
+## 0.9.3 (código 930)
+
+```
+<es-ES>
+• Personas mucho más rápida: empieza por las fotos con gente y las más recientes.
+• Las personas ya no aparecen y desaparecen, y el avance nunca se pierde.
+• Pausar la búsqueda de caras ya no borra nada.
+• «¿Son la misma persona?» y «¿Es Lucía?» para afinar en un minuto.
+• Nombres sobre las caras en el visor, portada, fijar y ordenar.
+• Grupos como Familia o Amigos, y «Cómo ha crecido».
+• Busca «Lucía y Marcos en la playa» o «solo Lucía».
+• Fotos más nítidas en tarjetas y editores.
+</es-ES>
+<en-US>
+• Much faster People: starts with photos of people and the newest ones.
+• People no longer appear and disappear, and progress is never lost.
+• Pausing face search no longer deletes anything.
+• “Are they the same person?” and “Is it Lucía?” to fine-tune in a minute.
+• Names on faces in the viewer, cover face, pin and sort.
+• Groups like Family or Friends, and “How they've grown”.
+• Search “Lucía and Marcos at the beach” or “only Lucía”.
+• Sharper photos in cards and editors.
+</en-US>
+```
+
 ## 0.9.2 (código 920)
 
 ```

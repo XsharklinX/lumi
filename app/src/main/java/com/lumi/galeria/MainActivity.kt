@@ -64,6 +64,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -87,6 +90,7 @@ import com.lumi.galeria.ui.FavoritesScreen
 import com.lumi.galeria.ui.GridLink
 import com.lumi.galeria.ui.LabelStyle
 import com.lumi.galeria.ui.Lumi
+import com.lumi.galeria.ui.HeadingStyle
 import com.lumi.galeria.ui.LumiTheme
 import com.lumi.galeria.ui.CollageScreen
 import com.lumi.galeria.ui.HiddenFoldersScreen
@@ -113,6 +117,10 @@ class MainActivity : FragmentActivity() {
     private val vm: LumiViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // El logo animado mientras arranca; al irse, se desvanece en vez de cortar de golpe.
+        installSplashScreen().setOnExitAnimationListener { splash ->
+            splash.view.animate().alpha(0f).setDuration(220).withEndAction { splash.remove() }.start()
+        }
         enableEdgeToEdge(SystemBarStyle.dark(Color.TRANSPARENT), SystemBarStyle.dark(Color.TRANSPARENT))
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) handle(intent)
@@ -120,9 +128,14 @@ class MainActivity : FragmentActivity() {
         setContent {
             val state by vm.state.collectAsStateWithLifecycle()
             Lang.apply(state.language)
-            LumiTheme(state.theme, state.accent, state.pureBlack) {
+            LumiTheme(state.theme, state.accent, state.pureBlack, vm.textScale, vm.highContrast) {
                 Box {
-                    LumiRoot(vm, state)
+                    com.lumi.galeria.ui.LocalStateHolder.state = state
+                    androidx.compose.runtime.CompositionLocalProvider(com.lumi.galeria.ui.LocalState provides state) { LumiRoot(vm, state) }
+                    // En la vista de apps recientes, Lumi en blanco: siempre o con lo privado abierto.
+                    val privateOpen = vm.backStack.any { it == Screen.Vault || it is Screen.Show } || state.albumsUnlocked
+                    val hide = vm.recentsHide == RecentsHide.ALWAYS || (vm.recentsHide == RecentsHide.PRIVATE && privateOpen)
+                    LaunchedEffect(hide) { hideInRecents(hide) }
                     // La huella sirve de atajo para no teclear el PIN propio.
                     PinOverlay(state, vm, onBiometric = if (canUseBiometrics()) ({ authenticate(biometricOnly = true) { vm.pinBypassed() } }) else null)
                 }
@@ -136,13 +149,41 @@ class MainActivity : FragmentActivity() {
         handle(intent)
     }
 
+    /** En la Cámara Lumi, las teclas de volumen hacen la foto. */
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+        val key = vm.volumeKey
+        if (key != null && (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP)) {
+            // Disparar o grabar, una vez por pulsación; el zoom sigue mientras se mantiene.
+            if (event?.repeatCount == 0 || vm.camPrefs.volume == com.lumi.galeria.data.VolumeKeys.ZOOM) key(keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP)
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
     override fun onResume() {
         super.onResume()
+        vm.setManageMedia(android.os.Build.VERSION.SDK_INT >= 31 && MediaStore.canManageMedia(this))
         vm.onPermission(hasMediaAccess(this), hasOnlyPartialAccess(this), granted(this, Manifest.permission.ACCESS_MEDIA_LOCATION))
+    }
+
+    /**
+     * Android 13 o posterior deja quitar solo la miniatura de recientes. Antes no hay más forma que
+     * la de las apps de bancos, que además impide hacer capturas dentro de Lumi.
+     */
+    private fun hideInRecents(hide: Boolean) {
+        if (Build.VERSION.SDK_INT >= 33) {
+            setRecentsScreenshotEnabled(!hide)
+        } else if (hide) {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        } else {
+            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        }
     }
 
     override fun onStop() {
         super.onStop()
+        // Al salir, los widgets se ponen al día con lo que haya cambiado.
+        com.lumi.galeria.widget.Widgets.refreshAll(this)
         // Al salir de la app se cierra lo privado; no al girar la pantalla.
         if (!isChangingConfigurations) vm.onLeave()
     }
@@ -212,14 +253,19 @@ class MainActivity : FragmentActivity() {
         fun shortcut(id: String, label: String, icon: Int) = android.content.pm.ShortcutInfo.Builder(this, id)
             .setShortLabel(tr(label))
             .setIcon(android.graphics.drawable.Icon.createWithResource(this, icon))
-            .setIntent(Intent(this, MainActivity::class.java).setAction("$SHORTCUT$id"))
+            .setIntent(
+                // Leer un QR va directo a la cámara a solas, que abre al instante.
+                if (id == "qr") Intent(this, CameraActivity::class.java).setAction(Intent.ACTION_MAIN).putExtra(CameraActivity.EXTRA_MODE, "QR")
+                else Intent(this, MainActivity::class.java).setAction("$SHORTCUT_PREFIX$id"),
+            )
             .build()
         runCatching {
             manager.dynamicShortcuts = listOf(
-                shortcut("buscar", "Buscar", R.drawable.ic_shortcut_search),
                 shortcut("camara", "Hacer una foto", R.drawable.ic_shortcut_camera),
+                shortcut("qr", "Leer un QR", R.drawable.ic_shortcut_qr),
+                shortcut("escanear", "Escanear", R.drawable.ic_shortcut_scan),
                 shortcut("privada", "Carpeta privada", R.drawable.ic_shortcut_lock),
-                shortcut("espacio", "Liberar espacio", R.drawable.ic_shortcut_space),
+                shortcut("buscar", "Buscar", R.drawable.ic_shortcut_search),
             )
         }
     }
@@ -241,24 +287,47 @@ class MainActivity : FragmentActivity() {
                     ),
                 )
             }
-            "${SHORTCUT}buscar" -> {
+            "${SHORTCUT_PREFIX}buscar" -> {
                 vm.setPick(null)
                 vm.switchTab(Screen.Timeline)
                 vm.openSearch()
             }
-            "${SHORTCUT}camara" -> {
+            "${SHORTCUT_PREFIX}camara" -> {
                 vm.setPick(null)
-                runCatching { startActivity(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)) }
+                // La cámara que se haya elegido; si se pregunta, la pregunta sale en Lumi.
+                when (vm.cameraChoice) {
+                    CameraChoice.PHONE -> runCatching { startActivity(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)) }
+                    CameraChoice.LUMI -> vm.open(Screen.Camera)
+                    CameraChoice.ASK -> vm.askCamera = true
+                }
             }
-            "${SHORTCUT}privada" -> {
+            "${SHORTCUT_PREFIX}privada" -> {
                 vm.setPick(null)
                 vm.switchTab(Screen.Albums)
                 vm.openVault { onOk -> authenticate(onOk = onOk) }
             }
-            "${SHORTCUT}espacio" -> {
+            "${SHORTCUT_PREFIX}espacio" -> {
                 vm.setPick(null)
                 vm.switchTab(Screen.Timeline)
                 vm.open(Screen.Space)
+            }
+            "${SHORTCUT_PREFIX}camara_lumi" -> {
+                vm.setPick(null)
+                vm.open(Screen.Camera)
+            }
+            "${SHORTCUT_PREFIX}qr", "${SHORTCUT_PREFIX}escanear" -> {
+                vm.setPick(null)
+                vm.cameraStart = if (intent.action!!.endsWith("qr")) "QR" else "DOCUMENT"
+                vm.backStack.removeAll { it == Screen.Camera }
+                vm.open(Screen.Camera)
+            }
+            com.lumi.galeria.widget.Widgets.ACTION_OPEN -> {
+                vm.setPick(null)
+                vm.openPhoto(intent.getLongExtra(com.lumi.galeria.widget.Widgets.EXTRA_PHOTO, -1L))
+            }
+            ACTION_EDIT -> {
+                vm.setPick(null)
+                vm.openPhoto(intent.getLongExtra(com.lumi.galeria.widget.Widgets.EXTRA_PHOTO, -1L), edit = true)
             }
             MemoryWidget.ACTION_MEMORY -> {
                 vm.setPick(null)
@@ -335,10 +404,10 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
             trash = { items, onDone ->
                 if (vm.state.value.useTrash) {
                     // Tras mandar algo a la papelera se ofrece deshacerlo unos segundos.
-                    ask(items, { onDone(); vm.offerUndo(items.filter { !it.isExternal }) }) { trashRequest(context, it, true) }
+                    ask(items, { onDone(); vm.offerUndo(items.filter { !it.isExternal }); vm.afterTrash() }) { trashRequest(context, it, true) }
                 } else {
                     // Sin papelera: se borra para siempre y no hay nada que deshacer.
-                    ask(items, onDone) { deleteRequest(context, it) }
+                    ask(items, { onDone(); vm.afterTrash() }) { deleteRequest(context, it) }
                 }
             },
             restore = { items -> ask(items, {}) { trashRequest(context, it, false) } },
@@ -384,8 +453,11 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
             },
             pip = { (context as MainActivity).floatVideo() },
             camera = {
-                runCatching { context.startActivity(Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)) }
-                    .onFailure { vm.say("No se encontró una app de cámara") }
+                when (vm.cameraChoice) {
+                    CameraChoice.PHONE -> openPhoneCamera(context, vm)
+                    CameraChoice.LUMI -> vm.open(Screen.Camera)
+                    CameraChoice.ASK -> vm.askCamera = true
+                }
             },
         )
     }
@@ -411,8 +483,18 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
     // El visor se pinta encima de la pantalla desde la que se abrió, que sigue viva debajo.
     val base = if (viewer == null) top else vm.backStack.lastOrNull { it !is Screen.Viewer } ?: Screen.Timeline
 
-    BackHandler(vm.backStack.size > 1 || base != Screen.Timeline) {
-        if (!vm.back()) vm.switchTab(Screen.Timeline)
+    var backProgress by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    var backEdgeLeft by remember { mutableStateOf(true) }
+    androidx.activity.compose.PredictiveBackHandler(vm.backStack.size > 1 || base != Screen.Timeline) { events ->
+        try {
+            events.collect { event ->
+                backProgress = event.progress
+                backEdgeLeft = event.swipeEdge == androidx.activity.BackEventCompat.EDGE_LEFT
+            }
+            if (!vm.back()) vm.switchTab(Screen.Timeline)
+        } finally {
+            backProgress = 0f
+        }
     }
 
     androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize().background(Lumi.Bg)) {
@@ -426,7 +508,19 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
         ) {
             androidx.compose.foundation.layout.Row(Modifier.fillMaxSize()) {
                 if (pane) com.lumi.galeria.ui.SidePane(state, vm, actions, base)
-                Box(Modifier.weight(1f).fillMaxHeight()) {
+                Box(
+                    Modifier.weight(1f).fillMaxHeight().graphicsLayer {
+                        val p = backProgress
+                        if (p > 0f) {
+                            val scale = 1f - 0.1f * p
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = (if (backEdgeLeft) 1f else -1f) * 24.dp.toPx() * p
+                            shape = RoundedCornerShape(28.dp * p)
+                            clip = true
+                        }
+                    },
+                ) {
                     if (state.hasPermission) {
                         // Al entrar en una pantalla llega desde la derecha; al volver, se va por la derecha. Entre
                         // Fotos y Álbumes se desliza hacia el lado de la pestaña.
@@ -474,6 +568,25 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
                                     is Screen.YearReview -> com.lumi.galeria.ui.YearReviewScreen(shown, state, vm)
                                     is Screen.VideoEditor -> com.lumi.galeria.ui.VideoEditorScreen(shown, state, vm)
                                     Screen.People -> com.lumi.galeria.ui.PeopleScreen(state, vm)
+                                    Screen.Documents -> com.lumi.galeria.ui.DocumentsScreen(state, vm, actions)
+                                    is Screen.DocView -> com.lumi.galeria.ui.DocViewScreen(shown, vm)
+                                    Screen.SaveDoc -> com.lumi.galeria.ui.SaveDocScreen(vm)
+                                    Screen.IdCard -> com.lumi.galeria.ui.IdCardScreen(vm)
+                                    is Screen.PdfEdit -> com.lumi.galeria.ui.PdfEditScreen(shown, vm)
+                                    is Screen.Signature -> com.lumi.galeria.ui.SignatureScreen(shown, vm)
+                                    is Screen.SignDoc -> com.lumi.galeria.ui.SignDocScreen(shown, state, vm)
+                                    Screen.Camera -> com.lumi.galeria.ui.CameraScreen(state, vm, actions)
+                                    Screen.Tour -> com.lumi.galeria.ui.TourScreen(state, vm)
+                                    Screen.Enhance -> com.lumi.galeria.ui.EnhanceScreen(state, vm)
+                                    Screen.Sensitive -> com.lumi.galeria.ui.SensitiveScreen(state, vm, actions)
+                                    is Screen.Show -> com.lumi.galeria.ui.ShowScreen(shown, state, vm, actions)
+                                    Screen.AutoWallpaper -> com.lumi.galeria.ui.AutoWallpaperScreen(state, vm)
+                                    Screen.CameraSettings -> com.lumi.galeria.ui.CameraSettingsScreen(vm)
+                                    is Screen.AlbumFolder -> com.lumi.galeria.ui.AlbumFolderScreen(shown, state, vm, actions)
+                                    Screen.MergePeople -> com.lumi.galeria.ui.MergePeopleScreen(state, vm)
+                                    is Screen.Doubts -> com.lumi.galeria.ui.DoubtsScreen(shown, state, vm)
+                                    is Screen.Circle -> com.lumi.galeria.ui.CircleScreen(shown, state, vm, actions, link)
+                                    is Screen.Growing -> com.lumi.galeria.ui.GrowingScreen(shown, state, vm)
                                     is Screen.Animate -> com.lumi.galeria.ui.AnimateScreen(shown, state, vm)
                                     is Screen.Export -> com.lumi.galeria.ui.ExportScreen(shown, state, vm, actions)
                                     is Screen.MemoryVideo -> com.lumi.galeria.ui.MemoryVideoScreen(shown, state, vm)
@@ -491,6 +604,40 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
             }
         }
         if (viewer != null) ViewerScreen(viewer, state, vm, actions, link)
+
+        if (vm.askCamera) CameraChooser(vm)
+
+        // La primera vez que se entra con acceso a las fotos, el recorrido de todo lo que hace Lumi.
+        LaunchedEffect(state.hasPermission, state.loading) {
+            if (state.hasPermission && !state.loading && !vm.tourSeen && vm.backStack.none { it == Screen.Tour }) vm.open(Screen.Tour)
+        }
+
+        if (vm.offerManageMedia) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { vm.offerManageMedia = false },
+                containerColor = Lumi.Surface,
+                title = { Text("¿Borrar sin que Android pregunte cada vez?", style = HeadingStyle) },
+                text = {
+                    Text(
+                        "Android pide permiso cada vez que una app manda fotos a la papelera. Puedes dejar que Lumi lo haga directamente: " +
+                            "activa «Permitir» en la pantalla que se abre. Seguirá habiendo papelera y el botón «Deshacer».",
+                        style = SmallStyle.copy(fontSize = 15.sp, color = Lumi.Ink),
+                    )
+                },
+                confirmButton = {
+                    Text(
+                        "Activar", style = LabelStyle, color = Lumi.Accent,
+                        modifier = Modifier.clip(CircleShape).clickable {
+                            vm.offerManageMedia = false
+                            openManageMedia(context)
+                        }.padding(12.dp),
+                    )
+                },
+                dismissButton = {
+                    Text("Ahora no", style = LabelStyle, color = Lumi.Muted, modifier = Modifier.clip(CircleShape).clickable { vm.offerManageMedia = false }.padding(12.dp))
+                },
+            )
+        }
 
         if (state.undo.isNotEmpty() && !state.pip) {
             Row(
@@ -555,7 +702,60 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
     }
 }
 
-private fun share(context: Context, uris: List<Uri>, allVideo: Boolean, allImages: Boolean) {
+/** La cámara que trae el teléfono. */
+fun openPhoneCamera(context: Context, vm: LumiViewModel) {
+    val intent = Intent(MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)
+    val other = runCatching {
+        context.packageManager.queryIntentActivities(intent, 0).firstOrNull { it.activityInfo.packageName != context.packageName }
+    }.getOrNull()
+    if (other != null) intent.setClassName(other.activityInfo.packageName, other.activityInfo.name)
+    runCatching { context.startActivity(intent) }
+        .onFailure { vm.say("No se encontró una app de cámara") }
+}
+
+/** Qué cámara usar: la del teléfono o la de Lumi, con la opción de no volver a preguntar. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun CameraChooser(vm: LumiViewModel) {
+    val context = LocalContext.current
+    val keep = androidx.compose.runtime.remember { mutableStateOf(false) }
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = { vm.askCamera = false }, containerColor = Lumi.Surface) {
+        Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("¿Con qué cámara?", style = HeadingStyle.copy(fontSize = 20.sp))
+            listOf(CameraChoice.PHONE to "La mejor calidad de foto", CameraChoice.LUMI to "QR, texto, documentos, privada, calco…").forEach { (choice, hint) ->
+                Row(
+                    Modifier.fillMaxWidth().clip(androidx.compose.foundation.shape.RoundedCornerShape(18.dp)).background(Lumi.Bg).clickable {
+                        vm.askCamera = false
+                        if (keep.value) vm.chooseCamera(choice)
+                        if (choice == CameraChoice.LUMI) vm.open(Screen.Camera) else openPhoneCamera(context, vm)
+                    }.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(if (choice == CameraChoice.PHONE) "Cámara del teléfono" else "Cámara Lumi", style = LabelStyle.copy(fontSize = 16.sp))
+                        Text(hint, style = SmallStyle)
+                    }
+                    Text("›", style = HeadingStyle, color = Lumi.Muted)
+                }
+            }
+            Row(Modifier.fillMaxWidth().clickable { keep.value = !keep.value }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Recordar mi elección", style = LabelStyle, modifier = Modifier.weight(1f))
+                androidx.compose.material3.Switch(keep.value, { keep.value = it }, colors = androidx.compose.material3.SwitchDefaults.colors(checkedTrackColor = Lumi.Accent))
+            }
+            Text("Se cambia cuando quieras en Ajustes.", style = SmallStyle)
+        }
+    }
+}
+
+/** Abre la pantalla de Android donde se concede «Gestión de contenido multimedia» a Lumi. */
+fun openManageMedia(context: Context) {
+    if (android.os.Build.VERSION.SDK_INT < 31) return
+    val app = Uri.fromParts("package", context.packageName, null)
+    runCatching { context.startActivity(Intent(Settings.ACTION_REQUEST_MANAGE_MEDIA, app)) }
+        .onFailure { runCatching { context.startActivity(Intent(Settings.ACTION_REQUEST_MANAGE_MEDIA)) } }
+}
+
+internal fun share(context: Context, uris: List<Uri>, allVideo: Boolean, allImages: Boolean) {
     if (uris.isEmpty()) return
     val intent = if (uris.size == 1) {
         Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
@@ -599,24 +799,11 @@ private fun PermissionScreen(onGrant: () -> Unit, onSettings: () -> Unit) {
             .padding(horizontal = 24.dp, vertical = 20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
     ) {
-        // Fotos de muestra que vienen con la app: todavía no se puede enseñar ninguna del teléfono.
-        androidx.compose.foundation.layout.Row(
-            Modifier.fillMaxWidth().padding(bottom = 22.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            listOf(R.drawable.welcome_1, R.drawable.welcome_2, R.drawable.welcome_3).forEachIndexed { index, picture ->
-                androidx.compose.foundation.Image(
-                    painter = androidx.compose.ui.res.painterResource(picture),
-                    contentDescription = null,
-                    contentScale = androidx.compose.ui.layout.ContentScale.Crop,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(top = if (index == 1) 18.dp else 0.dp)
-                        .aspectRatio(0.75f)
-                        .clip(RoundedCornerShape(20.dp)),
-                )
-            }
-        }
+        // Un dibujo de Lumi: todavía no se puede enseñar ninguna foto del teléfono.
+        com.lumi.galeria.ui.LumiArt(
+            com.lumi.galeria.ui.LockLineIcon, com.lumi.galeria.ui.ART_PALETTE[0],
+            Modifier.fillMaxWidth().aspectRatio(1.3f).clip(RoundedCornerShape(28.dp)).padding(bottom = 4.dp),
+        )
         Text("Tus fotos se quedan en tu teléfono", style = TitleStyle.copy(fontSize = 32.sp, lineHeight = 35.sp))
         Text(
             "Lumi necesita verlas para enseñártelas, ordenarlas y dejarte buscarlas. Nada más.",
@@ -649,8 +836,9 @@ private fun PermissionScreen(onGrant: () -> Unit, onSettings: () -> Unit) {
     }
 }
 
-/** Las acciones de los atajos del icono empiezan así. */
-private const val SHORTCUT = "com.lumi.galeria.ATAJO_"
+
+/** Abrir una foto directamente en el editor (desde la cámara a solas). */
+const val ACTION_EDIT = "com.lumi.galeria.EDITAR"
 
 /** La pantalla que se ve y cuántas hay debajo: así se sabe si se entra o se vuelve. */
 private data class Shown(val screen: Screen, val depth: Int)

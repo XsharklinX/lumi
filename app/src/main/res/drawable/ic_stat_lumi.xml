@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Icono de los avisos: el sol sobre la loma del logo, en un solo color. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="76"
+    android:viewportHeight="76">
+    <group android:translateX="-16" android:translateY="-22">
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M20,78 C32,60 44,59 54,70 C62,79 72,62 88,58 V90 H20 Z" />
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M60,41m-11,0a11,11 0,1 1,22 0a11,11 0,1 1,-22 0" />
+    </group>
+</vector>

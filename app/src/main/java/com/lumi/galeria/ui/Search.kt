@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -151,6 +152,7 @@ fun SearchScreen(state: UiState, vm: LumiViewModel, link: GridLink) {
         } else if (results.isEmpty()) {
             Column(Modifier.fillMaxSize().padding(28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 val close = remember(query) { similarWords(query) }
+                LumiArt(SearchLineIcon, ART_PALETTE[1], Modifier.fillMaxWidth().height(170.dp).clip(RoundedCornerShape(28.dp)))
                 Text(if (query.isBlank()) "Nada con estos filtros" else "Nada con «${query.trim()}»", style = HeadingStyle.copy(fontSize = 20.sp))
                 Text(
                     if (filters.isEmpty) "Prueba con una sola palabra, o usa los filtros de arriba." else "Prueba a quitar algún filtro de arriba.",
@@ -227,7 +229,7 @@ private fun FilterBar(state: UiState, found: Found, filters: Filters, set: (Filt
             Chip(name.ifEmpty { "Álbum" }, on = true) { set(filters.copy(album = null)) }
         }
         filters.thing?.let { Chip(it.replaceFirstChar(Char::uppercase), on = true) { set(filters.copy(thing = null)) } }
-        filters.person?.let { Chip(it, on = true) { set(filters.copy(person = null)) } }
+        filters.people.forEach { name -> Chip(name, on = true) { set(filters.copy(people = filters.people - name)) } }
         filters.camera?.let { Chip(it, on = true) { set(filters.copy(camera = null)) } }
         filters.size?.let { Chip(it.label, on = true) { set(filters.copy(size = null)) } }
         filters.format?.let { Chip(it, on = true) { set(filters.copy(format = null)) } }
@@ -239,7 +241,7 @@ private fun FilterBar(state: UiState, found: Found, filters: Filters, set: (Filt
         if (filters.place == null && places.isNotEmpty()) ListChip("Dónde", places) { set(filters.copy(place = it)) }
         if (filters.album == null && albums.size > 1) ListChip("Álbum", albums) { set(filters.copy(album = it)) }
         if (filters.thing == null && things.isNotEmpty()) ListChip("Qué hay", things) { set(filters.copy(thing = it)) }
-        if (filters.person == null && found.people.isNotEmpty()) ListChip("Quién", found.people) { set(filters.copy(person = it)) }
+        if (found.people.isNotEmpty()) ListChip(if (filters.people.isEmpty()) "Quién" else "Y con…", found.people) { set(filters.copy(people = filters.people + it)) }
         if (filters.camera == null && found.cameras.size > 1) ListChip("Cámara", found.cameras) { set(filters.copy(camera = it)) }
         if (filters.size == null && found.sizes.size > 1) ListChip("Tamaño", found.sizes) { set(filters.copy(size = it)) }
         if (filters.format == null && found.formats.size > 1) ListChip("Formato", found.formats) { set(filters.copy(format = it)) }
