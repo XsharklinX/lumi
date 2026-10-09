@@ -65,6 +65,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.draw.shadow
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.PriorityHigh
+import androidx.compose.material.icons.rounded.Info
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
@@ -202,6 +207,12 @@ class MainActivity : FragmentActivity() {
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         // Mientras el usuario toca la pantalla, el análisis de fotos espera.
         Quiet.touched()
+        // Dónde tocó: la pantalla que se abra con ese toque crece desde ahí.
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+            com.lumi.galeria.ui.TapOrigin.x = event.x
+            com.lumi.galeria.ui.TapOrigin.y = event.y
+            com.lumi.galeria.ui.TapOrigin.at = System.currentTimeMillis()
+        }
         return super.dispatchTouchEvent(event)
     }
 
@@ -373,6 +384,8 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
     val context = LocalContext.current
     val timelineGrid = rememberLazyGridState()
     val link = remember { GridLink() }
+    // Desde dónde creció cada pantalla, para encogerla hacia ahí al volver.
+    val growOrigins = remember { HashMap<Screen, androidx.compose.ui.graphics.TransformOrigin>() }
 
     fun refreshAccess() = vm.onPermission(
         hasMediaAccess(context), hasOnlyPartialAccess(context), granted(context, Manifest.permission.ACCESS_MEDIA_LOCATION),
@@ -407,11 +420,12 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
                     ask(items, { onDone(); vm.offerUndo(items.filter { !it.isExternal }); vm.afterTrash() }) { trashRequest(context, it, true) }
                 } else {
                     // Sin papelera: se borra para siempre y no hay nada que deshacer.
-                    ask(items, { onDone(); vm.afterTrash() }) { deleteRequest(context, it) }
+                    ask(items, { onDone(); vm.afterTrash(); vm.celebrate(items.sumOf { it.size }) }) { deleteRequest(context, it) }
                 }
             },
             restore = { items -> ask(items, {}) { trashRequest(context, it, false) } },
-            deleteForever = { items -> ask(items, {}) { deleteRequest(context, it) } },
+            // Vaciar la papelera libera espacio de verdad: se celebra. (Pasar a la tarjeta o a la carpeta privada, no.)
+            deleteForever = { items -> ask(items, { if (items.all { it.expires > 0 }) vm.celebrate(items.sumOf { it.size }) }) { deleteRequest(context, it) } },
             write = { items, onGranted -> ask(items, onGranted) { writeRequest(context, it) } },
             share = { items -> share(context, items.map { it.uri }, items.all { it.isVideo }, items.none { it.isVideo }) },
             shareUris = { uris -> share(context, uris, false, true) },
@@ -497,9 +511,25 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
         }
     }
 
-    androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize().background(Lumi.Bg)) {
+    // Al bajar por cualquier lista la barra de abajo se retira; al subir, vuelve.
+    val dockScroll = remember {
+        object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
+            var travelled = 0f
+            override fun onPreScroll(available: androidx.compose.ui.geometry.Offset, source: androidx.compose.ui.input.nestedscroll.NestedScrollSource): androidx.compose.ui.geometry.Offset {
+                if ((available.y > 0f) != (travelled > 0f)) travelled = 0f
+                travelled += available.y
+                if (travelled < -60f) com.lumi.galeria.ui.DockState.hidden = true else if (travelled > 40f) com.lumi.galeria.ui.DockState.hidden = false
+                return androidx.compose.ui.geometry.Offset.Zero
+            }
+        }
+    }
+    androidx.compose.foundation.layout.BoxWithConstraints(
+        Modifier.fillMaxSize().background(Lumi.Bg).then(androidx.compose.ui.Modifier.nestedScroll(dockScroll)),
+    ) {
         // Tableta o plegable abierto: panel fijo a la izquierda y más columnas en las cuadrículas.
         val wide = maxWidth >= com.lumi.galeria.ui.WIDE_FROM && maxHeight >= 480.dp
+        val rootWidth = maxWidth
+        val rootHeight = maxHeight
         val pane = wide && !com.lumi.galeria.ui.isImmersive(base)
         val room = if (pane) maxWidth - com.lumi.galeria.ui.SIDE_PANE else maxWidth
         androidx.compose.runtime.CompositionLocalProvider(
@@ -525,6 +555,9 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
                         // Al entrar en una pantalla llega desde la derecha; al volver, se va por la derecha. Entre
                         // Fotos y Álbumes se desliza hacia el lado de la pestaña.
                         val depth = vm.backStack.count { it !is Screen.Viewer }
+                        // Al cambiar de pestaña, la barra de abajo vuelve a verse.
+                        LaunchedEffect(base) { com.lumi.galeria.ui.DockState.hidden = false }
+                        val screenSize = with(androidx.compose.ui.platform.LocalDensity.current) { androidx.compose.ui.geometry.Size(rootWidth.toPx(), rootHeight.toPx()) }
                         AnimatedContent(
                             targetState = Shown(base, depth),
                             contentKey = { it.screen },
@@ -533,9 +566,28 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
                                     targetState.depth != initialState.depth -> targetState.depth > initialState.depth
                                     else -> targetState.screen == Screen.Albums
                                 }
-                                val sign = if (forward) 1 else -1
-                                (slideInHorizontally(tween(260)) { sign * it / 4 } + fadeIn(tween(260)))
-                                    .togetherWith(slideOutHorizontally(tween(260)) { -sign * it / 6 } + fadeOut(tween(180)))
+                                // Álbumes, viajes, recuerdos y personas crecen desde la tarjeta que se tocó
+                                // y, al volver, se encogen hacia ella.
+                                val grows = { s: Screen -> s is Screen.Album || s is Screen.Items || s is Screen.Person || s is Screen.AlbumFolder || s is Screen.YearReview || s is Screen.Circle }
+                                val opening = forward && grows(targetState.screen)
+                                val closing = !forward && grows(initialState.screen)
+                                val tap = if (opening) com.lumi.galeria.ui.TapOrigin.recent() else null
+                                if (opening && tap != null) {
+                                    val origin = androidx.compose.ui.graphics.TransformOrigin(
+                                        (tap.x / screenSize.width).coerceIn(0f, 1f), (tap.y / screenSize.height).coerceIn(0f, 1f),
+                                    )
+                                    growOrigins[targetState.screen] = origin
+                                    (androidx.compose.animation.scaleIn(androidx.compose.animation.core.spring(dampingRatio = 0.86f, stiffness = 300f), initialScale = 0.35f, transformOrigin = origin) + fadeIn(tween(200)))
+                                        .togetherWith(fadeOut(tween(220)) + androidx.compose.animation.scaleOut(tween(300), targetScale = 0.96f))
+                                } else if (closing && growOrigins[initialState.screen] != null) {
+                                    val origin = growOrigins.remove(initialState.screen)!!
+                                    (fadeIn(tween(250)) + androidx.compose.animation.scaleIn(tween(300), initialScale = 0.96f))
+                                        .togetherWith(androidx.compose.animation.scaleOut(tween(280), targetScale = 0.35f, transformOrigin = origin) + fadeOut(tween(240)))
+                                } else {
+                                    val sign = if (forward) 1 else -1
+                                    (slideInHorizontally(tween(260)) { sign * it / 4 } + fadeIn(tween(260)))
+                                        .togetherWith(slideOutHorizontally(tween(260)) { -sign * it / 6 } + fadeOut(tween(180)))
+                                }.apply { targetContentZIndex = if (closing) -1f else 1f }
                             },
                             label = "pantallas",
                         ) { (shown, _) ->
@@ -639,6 +691,48 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
             )
         }
 
+        // Agitar para deshacer, mientras haya algo recién hecho que deshacer.
+        val canUndo = state.undo.isNotEmpty() || vm.undoText != null
+        var askUndo by remember { mutableStateOf(false) }
+        androidx.compose.runtime.DisposableEffect(canUndo, vm.shakeUndo) {
+            val sensors = context.getSystemService(Context.SENSOR_SERVICE) as android.hardware.SensorManager
+            var last = 0L
+            val listener = object : android.hardware.SensorEventListener {
+                override fun onSensorChanged(event: android.hardware.SensorEvent) {
+                    val (x, y, z) = Triple(event.values[0], event.values[1], event.values[2])
+                    val g = kotlin.math.sqrt(x * x + y * y + z * z) / android.hardware.SensorManager.GRAVITY_EARTH
+                    val now = System.currentTimeMillis()
+                    if (g > 2.6f && now - last > 1500) {
+                        last = now
+                        askUndo = true
+                    }
+                }
+                override fun onAccuracyChanged(sensor: android.hardware.Sensor?, accuracy: Int) = Unit
+            }
+            if (canUndo && vm.shakeUndo) {
+                sensors.getDefaultSensor(android.hardware.Sensor.TYPE_ACCELEROMETER)?.let { sensors.registerListener(listener, it, android.hardware.SensorManager.SENSOR_DELAY_UI) }
+            }
+            onDispose { sensors.unregisterListener(listener) }
+        }
+        if (askUndo && canUndo) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { askUndo = false },
+                containerColor = Lumi.Surface,
+                title = { Text("¿Deshacer?", style = HeadingStyle) },
+                text = { Text(vm.undoText ?: countText(state.undo.size, "enviada a la papelera", "enviadas a la papelera"), style = SmallStyle.copy(fontSize = 15.sp)) },
+                confirmButton = {
+                    Text("Deshacer", style = LabelStyle, color = Lumi.Accent, modifier = Modifier.clip(CircleShape).clickable {
+                        askUndo = false
+                        if (state.undo.isNotEmpty()) {
+                            actions.restore(state.undo)
+                            vm.clearUndo()
+                        } else vm.runUndo()
+                    }.padding(12.dp))
+                },
+                dismissButton = { Text("Cancelar", style = LabelStyle, color = Lumi.Muted, modifier = Modifier.clip(CircleShape).clickable { askUndo = false }.padding(12.dp)) },
+            )
+        }
+
         if (state.undo.isNotEmpty() && !state.pip) {
             Row(
                 Modifier
@@ -684,19 +778,25 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
             }
         }
 
+        // Arrastrando fotos a un álbum: la bandeja y las fotos bajo el dedo, por encima de todo.
+        com.lumi.galeria.ui.AlbumDragState.session?.let { com.lumi.galeria.ui.AlbumDragOverlay(it) }
+        // Al liberar espacio de verdad, confeti y la cifra.
+        vm.celebration?.let { bytes -> com.lumi.galeria.ui.Celebration(bytes) { vm.celebration = null } }
+        // Los avisos, como tarjeta con icono que entra desde abajo; se quitan deslizándolos.
         state.message?.let { message ->
-            Text(
+            com.lumi.galeria.ui.ToastCard(
                 message,
-                style = LabelStyle,
+                Triple(
+                    androidx.compose.material.icons.Icons.Rounded.Check,
+                    androidx.compose.material.icons.Icons.Rounded.PriorityHigh,
+                    androidx.compose.material.icons.Icons.Rounded.Info,
+                ),
+                onDismiss = { vm.clearMessage() },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
-                    .padding(start = 24.dp, end = 24.dp, bottom = 84.dp)
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(Lumi.Ink)
-                    .padding(horizontal = 18.dp, vertical = 11.dp),
-                color = Lumi.Bg,
-                textAlign = TextAlign.Center,
+                    .padding(start = 20.dp, end = 20.dp, bottom = 84.dp)
+                    .shadow(10.dp, RoundedCornerShape(18.dp)),
             )
         }
     }

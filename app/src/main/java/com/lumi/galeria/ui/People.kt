@@ -383,8 +383,11 @@ fun PersonScreen(screen: Screen.Person, state: UiState, vm: LumiViewModel, actio
             }
         },
         hero = {
+            // La cabecera de la persona toma el color de su foto de portada.
+            val tone = coverTone(state.items.firstOrNull { it.id == person.cover.photo })
             Column(
-                Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),
+                Modifier.fillMaxWidth().background(androidx.compose.ui.graphics.Brush.verticalGradient(0f to tone.copy(alpha = 0.5f), 1f to Color.Transparent))
+                    .padding(top = 8.dp, bottom = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {

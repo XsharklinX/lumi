@@ -55,9 +55,10 @@ import com.lumi.galeria.formatCount
 @Composable
 fun FolderTile(folder: AlbumFolder, albums: List<Album>, onLongClick: () -> Unit, onClick: () -> Unit) {
     val covers = albums.filter { !it.locked }.take(2).map { it.cover }
+    val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Box(
-        Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(20.dp)).background(Lumi.Surface)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+        Modifier.fillMaxWidth().aspectRatio(1f).pressScale(press).clip(RoundedCornerShape(20.dp)).background(Lumi.Surface)
+            .combinedClickable(press, androidx.compose.material3.ripple(), onClick = onClick, onLongClick = onLongClick),
     ) {
         covers.getOrNull(1)?.let {
             MediaThumb(it, 320, Modifier.padding(14.dp).fillMaxSize().rotate(-6f).offset(x = (-6).dp).clip(RoundedCornerShape(16.dp)))

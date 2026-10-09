@@ -1,5 +1,10 @@
 package com.lumi.galeria.ui
 
+import androidx.compose.animation.togetherWith
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import com.lumi.galeria.data.cardVolume
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.activity.compose.BackHandler
@@ -236,7 +241,19 @@ fun PhotoTile(
             if (selected != null) this.selected = selected
         },
     ) {
-        MediaThumb(item, px, Modifier.fillMaxSize(), tone)
+        // Al elegirla, la foto se encoge un poco y la marca entra con un salto.
+        val picked by androidx.compose.animation.core.animateFloatAsState(
+            if (selected == true) 1f else 0f, androidx.compose.animation.core.spring(dampingRatio = 0.6f, stiffness = 500f), label = "elegida",
+        )
+        MediaThumb(
+            item, px,
+            Modifier.fillMaxSize().graphicsLayer {
+                val s = 1f - 0.1f * picked
+                scaleX = s
+                scaleY = s
+            }.clip(RoundedCornerShape((corner.value + 10f * picked).dp)),
+            tone,
+        )
         if (preview && item.isVideo) VideoPreview(item, Modifier.fillMaxSize())
         if (badges) {
             if (stackSize > 1) {
@@ -292,11 +309,16 @@ fun PhotoTile(
             }
         }
         if (selected != null) {
-            if (selected) Box(Modifier.fillMaxSize().background(Lumi.Accent.copy(alpha = 0.28f)))
+            if (selected) Box(Modifier.fillMaxSize().background(Lumi.Accent.copy(alpha = 0.18f * picked)))
             Box(
                 Modifier
                     .align(Alignment.TopStart)
                     .padding(6.dp)
+                    .graphicsLayer {
+                        val pop = 1f + 0.25f * picked * (1f - picked) * 4f
+                        scaleX = pop
+                        scaleY = pop
+                    }
                     .size(22.dp)
                     .clip(CircleShape)
                     .background(if (selected) Lumi.Accent else Color.Black.copy(alpha = 0.35f))
@@ -313,50 +335,79 @@ fun PhotoTile(
  * La barra de abajo: Fotos, Álbumes y Documentos, y al lado un botón redondo de cámara. Tocarlo
  * abre la cámara; mantenerlo pulsado abre el escáner de documentos.
  */
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+/**
+ * La barra de pestañas de abajo. La pastilla de color se desliza hasta la pestaña nueva (también al
+ * cambiar de pantalla, porque recuerda de cuál venía), y la barra se retira al bajar por una lista.
+ * La cámara ya no va aquí: está arriba en Fotos y en el widget, el icono y los atajos.
+ */
+@Suppress("UNUSED_PARAMETER")
 @Composable
 fun Dock(current: Screen, onSelect: (Screen) -> Unit, modifier: Modifier = Modifier, onCamera: (() -> Unit)? = null, onScan: (() -> Unit)? = null) {
-    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    val tabs = listOf(Screen.Timeline to "Fotos", Screen.Albums to "Álbumes", Screen.Documents to "Documentos")
+    val places = remember { androidx.compose.runtime.mutableStateMapOf<Screen, Pair<Float, Float>>() }
+    val pillX = remember { androidx.compose.animation.core.Animatable(-1f) }
+    val pillW = remember { androidx.compose.animation.core.Animatable(0f) }
+    val target = places[current]
+    LaunchedEffect(current, target) {
+        val goal = target ?: return@LaunchedEffect
+        if (pillX.value < 0f) {
+            val from = (DockState.lastTab as? Screen)?.let { places[it] } ?: goal
+            pillX.snapTo(from.first)
+            pillW.snapTo(from.second)
+        }
+        val motion = androidx.compose.animation.core.spring<Float>(dampingRatio = 0.72f, stiffness = 420f)
+        launch { pillX.animateTo(goal.first, motion) }
+        pillW.animateTo(goal.second, motion)
+        DockState.lastTab = current
+    }
+    val hidden by androidx.compose.animation.core.animateFloatAsState(
+        if (DockState.hidden) 1f else 0f, androidx.compose.animation.core.spring(dampingRatio = 0.8f, stiffness = 380f), label = "barra",
+    )
+    val accent = Lumi.Accent
+    Row(
+        modifier.graphicsLayer {
+            translationY = hidden * 140.dp.toPx()
+            alpha = 1f - hidden * 0.4f
+        },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Row(
             Modifier
+                .shadow(8.dp, CircleShape)
                 .clip(CircleShape)
-                .background(Lumi.Surface.copy(alpha = 0.96f))
-                .padding(5.dp),
+                .background(Lumi.Surface.copy(alpha = 0.97f))
+                .padding(5.dp)
+                .drawBehind {
+                    if (pillX.value >= 0f) {
+                        drawRoundRect(
+                            accent, topLeft = androidx.compose.ui.geometry.Offset(pillX.value, 0f),
+                            size = androidx.compose.ui.geometry.Size(pillW.value, size.height),
+                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2),
+                        )
+                    }
+                },
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            listOf(Screen.Timeline to "Fotos", Screen.Albums to "Álbumes", Screen.Documents to "Documentos").forEach { (screen, label) ->
+            tabs.forEach { (screen, label) ->
                 val on = screen == current
+                val color by androidx.compose.animation.animateColorAsState(if (on) Lumi.OnAccent else Lumi.Muted, label = "pestaña")
+                val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
                 Text(
                     label,
                     style = LabelStyle,
-                    color = if (on) Lumi.OnAccent else Lumi.Muted,
+                    color = color,
                     maxLines = 1,
                     modifier = Modifier
+                        .onGloballyPositioned { places[screen] = it.positionInParent().x to it.size.width.toFloat() }
+                        .pressScale(source)
                         .clip(CircleShape)
-                        .background(if (on) Lumi.Accent else Color.Transparent)
                         .semantics {
                             role = Role.Tab
                             selected = on
                         }
-                        .clickable { onSelect(screen) }
-                        .padding(horizontal = 13.dp, vertical = 12.dp),
+                        .clickable(source, null) { onSelect(screen) }
+                        .padding(horizontal = 15.dp, vertical = 12.dp),
                 )
-            }
-        }
-        if (onCamera != null) {
-            Box(
-                Modifier
-                    .size(50.dp)
-                    .shadow(6.dp, CircleShape)
-                    .clip(CircleShape)
-                    .background(Lumi.Accent)
-                    .combinedClickable(onClick = onCamera, onLongClick = onScan)
-                    .semantics { contentDescription = tr("Cámara. Mantén pulsado para escanear un documento") },
-                contentAlignment = Alignment.Center,
-            ) {
-                Box(Modifier.size(20.dp).clip(CircleShape).border(2.5.dp, Lumi.OnAccent, CircleShape), contentAlignment = Alignment.Center) {
-                    Box(Modifier.size(8.dp).clip(CircleShape).background(Lumi.OnAccent))
-                }
             }
         }
     }
@@ -382,6 +433,7 @@ fun PillButton(
         primary -> Lumi.OnAccent
         else -> Lumi.Ink
     }
+    val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Text(
         text,
         style = LabelStyle.copy(fontWeight = FontWeight.Bold),
@@ -390,9 +442,10 @@ fun PillButton(
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         modifier = modifier
+            .pressScale(press)
             .clip(CircleShape)
             .background(background)
-            .clickable(enabled = enabled, onClick = onClick)
+            .clickable(press, androidx.compose.material3.ripple(), enabled = enabled, onClick = onClick)
             .padding(horizontal = 20.dp, vertical = 15.dp),
     )
 }
@@ -400,13 +453,27 @@ fun PillButton(
 @Composable
 fun BarIcon(icon: ImageVector, label: String, onClick: () -> Unit, tint: Color = Lumi.Ink) {
     // Al menos 48 dp para el dedo, aunque el icono se vea más pequeño.
-    Icon(icon, label, Modifier.minimumInteractiveComponentSize().clip(CircleShape).clickable(onClick = onClick).padding(10.dp).size(22.dp), tint = tint)
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    Icon(
+        icon, label,
+        Modifier.minimumInteractiveComponentSize().pressScale(source, 0.86f).clip(CircleShape).clickable(source, androidx.compose.material3.ripple(bounded = false)) { onClick() }
+            .padding(10.dp).size(22.dp),
+        tint = tint,
+    )
 }
 
 @Composable
-fun ScreenHeader(title: String, subtitle: String, onBack: (() -> Unit)? = null, trailing: (@Composable () -> Unit)? = null) {
+fun ScreenHeader(
+    title: String,
+    subtitle: String,
+    onBack: (() -> Unit)? = null,
+    /** De 0 (título grande) a 1 (encogido, al bajar por la lista). */
+    collapse: Float = 0f,
+    trailing: (@Composable () -> Unit)? = null,
+) {
     Row(
-        Modifier.fillMaxWidth().statusBarsPadding().padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 12.dp),
+        Modifier.fillMaxWidth().statusBarsPadding()
+            .padding(start = 16.dp, end = 16.dp, top = (14 - 8 * collapse).dp, bottom = (12 - 6 * collapse).dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (onBack != null) {
@@ -418,8 +485,8 @@ fun ScreenHeader(title: String, subtitle: String, onBack: (() -> Unit)? = null, 
             Spacer(Modifier.width(8.dp))
         }
         Column(Modifier.weight(1f)) {
-            Text(title, style = TitleStyle, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (subtitle.isNotEmpty()) Text(subtitle, style = SmallStyle)
+            Text(title, style = TitleStyle.copy(fontSize = (30 - 9 * collapse).sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (subtitle.isNotEmpty() && collapse < 0.9f) Text(subtitle, style = SmallStyle, modifier = Modifier.graphicsLayer { alpha = 1f - collapse })
         }
         trailing?.invoke()
     }
@@ -711,6 +778,8 @@ fun FastScroller(grid: LazyGridState, count: Int, label: (index: Int) -> String,
     var track by remember { mutableIntStateOf(0) }
     var dragging by remember { mutableStateOf(false) }
     var dragFraction by remember { mutableFloatStateOf(0f) }
+    var lastLabel by remember { mutableStateOf("") }
+    val scrollView = androidx.compose.ui.platform.LocalView.current
     val scrollFraction by remember(count) {
         derivedStateOf {
             val last = (count - grid.layoutInfo.visibleItemsInfo.size).coerceAtLeast(1)
@@ -756,7 +825,14 @@ fun FastScroller(grid: LazyGridState, count: Int, label: (index: Int) -> String,
                             ) { change, dy ->
                                 change.consume()
                                 dragFraction = (dragFraction + dy / (track - thumbPx).coerceAtLeast(1f)).coerceIn(0f, 1f)
-                                scope.launch { grid.scrollToItem((dragFraction * (count - 1)).roundToInt()) }
+                                val index = (dragFraction * (count - 1)).roundToInt()
+                                scope.launch { grid.scrollToItem(index) }
+                                // Un toque suave cada vez que se pasa a otro mes, como una rueda con muescas.
+                                val now = label(index)
+                                if (now != lastLabel) {
+                                    lastLabel = now
+                                    scrollView.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+                                }
                             }
                         },
                     )
@@ -784,6 +860,10 @@ fun SelectionBar(chosen: List<MediaItem>, state: UiState, vm: LumiViewModel, act
     Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         // Con otra app al lado, lo elegido se puede soltar en ella.
         if (canDragOut()) Box(Modifier.align(Alignment.CenterHorizontally)) { DragOutHandle(chosen) }
+        // Arrastrar lo elegido a un álbum de la bandeja que sale a un lado.
+        if (targets.isNotEmpty()) Box(Modifier.align(Alignment.CenterHorizontally)) {
+            AlbumDragHandle(chosen, targets) { album -> actions.write(chosen) { vm.moveTo(chosen, album.path, album.name) }; onClear() }
+        }
         // Álbumes a un toque: se elige uno y lo marcado se mueve allí, sin abrir ningún menú.
         if (targets.isNotEmpty()) {
             Row(
@@ -814,11 +894,19 @@ fun SelectionBar(chosen: List<MediaItem>, state: UiState, vm: LumiViewModel, act
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(26.dp)).background(Lumi.Surface).padding(start = 4.dp, end = 4.dp, top = 2.dp, bottom = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 BarIcon(Icons.Filled.Close, "Cancelar", onClear)
-                Text(
-                    countText(chosen.size, "seleccionada", "seleccionadas"),
-                    style = LabelStyle.copy(fontSize = 15.sp, fontWeight = FontWeight.Bold),
+                // El número sube (o baja) rodando al elegir.
+                androidx.compose.animation.AnimatedContent(
+                    targetState = chosen.size,
+                    transitionSpec = {
+                        val up = targetState > initialState
+                        (androidx.compose.animation.slideInVertically { if (up) it else -it } + androidx.compose.animation.fadeIn())
+                            .togetherWith(androidx.compose.animation.slideOutVertically { if (up) -it else it } + androidx.compose.animation.fadeOut())
+                    },
                     modifier = Modifier.weight(1f),
-                )
+                    label = "contador",
+                ) { count ->
+                    Text(countText(count, "seleccionada", "seleccionadas"), style = LabelStyle.copy(fontSize = 15.sp, fontWeight = FontWeight.Bold))
+                }
                 Text(formatSize(weight), style = SmallStyle.copy(fontSize = 13.sp), modifier = Modifier.padding(end = 14.dp))
             }
             Row(Modifier.fillMaxWidth()) {

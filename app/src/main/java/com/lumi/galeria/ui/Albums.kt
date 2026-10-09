@@ -1,5 +1,7 @@
 package com.lumi.galeria.ui
 
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import com.lumi.galeria.monthTitle
 import androidx.compose.material.icons.filled.Share
@@ -101,6 +103,10 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
     }
 
     val inFolders = vm.albumFolders.flatMapTo(HashSet()) { it.albums }
+    // Al bajar por los álbumes el título grande se encoge.
+    val albumsGrid = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+    val albumsScrolled by remember { androidx.compose.runtime.derivedStateOf { albumsGrid.firstVisibleItemIndex > 0 || albumsGrid.firstVisibleItemScrollOffset > 40 } }
+    val albumsCollapse by androidx.compose.animation.core.animateFloatAsState(if (albumsScrolled) 1f else 0f, androidx.compose.animation.core.tween(260), label = "titulo")
     val shown = state.albums.filter { (state.showHidden || !it.hidden) && it.bucketId !in inFolders }
     val pinned = shown.filter { it.pinned }
     val rest = shown.filter { !it.pinned }
@@ -183,7 +189,7 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
     Box(Modifier.fillMaxSize().background(Lumi.Bg)) {
         Column {
             // Lupa y tuerca en el mismo sitio que en Fotos.
-            ScreenHeader("Álbumes", "") {
+            ScreenHeader("Álbumes", "", collapse = albumsCollapse) {
                 BarIcon(Icons.Filled.Search, "Buscar", { vm.openSearch() })
                 BarIcon(Icons.Filled.Settings, "Ajustes", { vm.open(Screen.Settings) })
             }
@@ -209,6 +215,7 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
             val columns = if (view == AlbumView.GRID) 2 else 1
             LazyVerticalGrid(
                 columns = GridCells.Fixed(scaledColumns(columns)),
+                state = albumsGrid,
                 contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 130.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -589,10 +596,18 @@ private fun AlbumHero(cover: MediaItem?, title: String, items: List<MediaItem>, 
             if (first == last) monthTitle(first) else "${monthTitle(first)} – ${monthTitle(last)}"
         }
     }
-    Column {
-        Box(Modifier.fillMaxWidth().aspectRatio(1.4f)) {
-            if (cover != null) MediaThumb(cover, 1024, Modifier.fillMaxSize())
-            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.4f to Color.Transparent, 1f to Lumi.Bg)))
+    val tone = coverTone(cover)
+    val still = reducedMotion()
+    val drift = androidx.compose.animation.core.rememberInfiniteTransition(label = "portada")
+    val zoom by drift.animateFloat(
+        1f, if (still) 1f else 1.08f,
+        androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(10000, easing = androidx.compose.animation.core.LinearEasing), androidx.compose.animation.core.RepeatMode.Reverse),
+        label = "acercar",
+    )
+    Column(Modifier.background(Brush.verticalGradient(0f to tone.copy(alpha = 0.55f), 1f to Lumi.Bg))) {
+        Box(Modifier.fillMaxWidth().aspectRatio(1.4f).clip(RoundedCornerShape(0.dp))) {
+            if (cover != null) MediaThumb(cover, 1024, Modifier.fillMaxSize().graphicsLayer { scaleX = zoom; scaleY = zoom })
+            Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.35f to Color.Transparent, 0.8f to tone.copy(alpha = 0.6f), 1f to tone.copy(alpha = 0.75f))))
             Column(Modifier.align(Alignment.BottomStart).padding(start = 16.dp, end = 16.dp, bottom = 4.dp)) {
                 Text(title, style = TitleStyle.copy(fontSize = 30.sp), maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(countText(items.size, "foto", "fotos") + if (dates.isNotEmpty()) " · $dates" else "", style = SmallStyle.copy(fontSize = 14.sp))
@@ -738,4 +753,15 @@ internal fun ItemsScreen(
             }
         }
     }
+}
+
+/** El color de una portada (el medio que Lumi ya calculó al analizarla), suavizado para que se lea encima. */
+@Composable
+fun coverTone(cover: MediaItem?): Color {
+    val state = LocalState.current
+    val raw = cover?.let { state.index[it.id]?.color }?.takeIf { it ushr 24 == 0xFF }
+    val base = raw?.let { Color(it) } ?: Lumi.Accent
+    val target = androidx.compose.ui.graphics.lerp(base, Lumi.Bg, 0.35f)
+    val shown by androidx.compose.animation.animateColorAsState(target, androidx.compose.animation.core.tween(600), label = "tono")
+    return shown
 }

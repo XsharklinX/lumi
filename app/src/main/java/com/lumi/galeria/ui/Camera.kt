@@ -215,7 +215,7 @@ internal fun lookSwatch(look: CameraLook): Color = when (look) {
 
 /** Las guías de composición y el nivel (que se pone del color de la app cuando el móvil está recto). */
 @Composable
-internal fun GuideOverlay(guide: Guide, tilt: Float) {
+internal fun GuideOverlay(guide: Guide, tilt: Float, level: Boolean = true) {
     val accent = Lumi.Accent
     Canvas(Modifier.fillMaxSize()) {
         val line = Color.White.copy(alpha = 0.38f)
@@ -253,10 +253,16 @@ internal fun GuideOverlay(guide: Guide, tilt: Float) {
                 }
             }
         }
-        // Nivel: siempre, pequeño, en el centro.
-        val straight = kotlin.math.abs(tilt) < 1f
-        rotate(-tilt, Offset(w / 2, h / 2)) {
-            drawLine(if (straight) accent else Color.White.copy(alpha = 0.7f), Offset(w / 2 - 60, h / 2), Offset(w / 2 + 60, h / 2), 3f)
+        // Nivel, si se pidió: dos trazos fijos a los lados y uno que gira con el móvil; al quedar
+        // recto se juntan en una sola línea del color de la app.
+        if (level) {
+            val straight = kotlin.math.abs(tilt) < 1f
+            val color = if (straight) accent else Color.White.copy(alpha = 0.8f)
+            drawLine(color, Offset(w / 2 - 92, h / 2), Offset(w / 2 - 66, h / 2), 3f)
+            drawLine(color, Offset(w / 2 + 66, h / 2), Offset(w / 2 + 92, h / 2), 3f)
+            rotate(-tilt, Offset(w / 2, h / 2)) {
+                drawLine(color, Offset(w / 2 - 56, h / 2), Offset(w / 2 + 56, h / 2), if (straight) 4f else 2.5f)
+            }
         }
     }
 }

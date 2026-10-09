@@ -41,13 +41,25 @@ object Lumi {
     var contrast by mutableStateOf(false)
         private set
 
-    val Bg get() = if (!dark) Color(0xFFF6F5FA) else if (black) Color.Black else Color(0xFF0E0E13)
-    val Surface get() = if (!dark) Color(0xFFE9E6F3) else if (black) Color(0xFF16161B) else Color(0xFF1C1B24)
-    val Line get() = if (contrast) (if (dark) Color(0xFF6E6B80) else Color(0xFF8A8799)) else if (dark) Color(0xFF2A2933) else Color(0xFFD9D6E6)
-    val Ink get() = if (dark) Color(0xFFF4F3F8) else Color(0xFF15131F)
-    val Muted get() = if (contrast) (if (dark) Color(0xFFDAD8E6) else Color(0xFF34313F)) else if (dark) Color(0xFFA19FB2) else Color(0xFF5D5A6E)
-    val Accent get() = if (dark) accent.dark else accent.light
-    val OnAccent get() = if (dark) Color(0xFF17131F) else Color(0xFFFFFFFF)
+    // Los colores que tocan con el tema elegido.
+    internal fun targetBg() = if (!dark) Color(0xFFF6F5FA) else if (black) Color.Black else Color(0xFF0E0E13)
+    internal fun targetSurface() = if (!dark) Color(0xFFE9E6F3) else if (black) Color(0xFF16161B) else Color(0xFF1C1B24)
+    internal fun targetLine() = if (contrast) (if (dark) Color(0xFF6E6B80) else Color(0xFF8A8799)) else if (dark) Color(0xFF2A2933) else Color(0xFFD9D6E6)
+    internal fun targetInk() = if (dark) Color(0xFFF4F3F8) else Color(0xFF15131F)
+    internal fun targetMuted() = if (contrast) (if (dark) Color(0xFFDAD8E6) else Color(0xFF34313F)) else if (dark) Color(0xFFA19FB2) else Color(0xFF5D5A6E)
+    internal fun targetAccent() = if (dark) accent.dark else accent.light
+    internal fun targetOnAccent() = if (dark) Color(0xFF17131F) else Color(0xFFFFFFFF)
+
+    /** Los colores de ahora: al cambiar de tema van de unos a otros en medio segundo. */
+    internal var shown by mutableStateOf<Palette?>(null)
+
+    val Bg get() = shown?.bg ?: targetBg()
+    val Surface get() = shown?.surface ?: targetSurface()
+    val Line get() = shown?.line ?: targetLine()
+    val Ink get() = shown?.ink ?: targetInk()
+    val Muted get() = shown?.muted ?: targetMuted()
+    val Accent get() = shown?.accent ?: targetAccent()
+    val OnAccent get() = shown?.onAccent ?: targetOnAccent()
     val Danger get() = if (dark) Color(0xFFFF8A80) else Color(0xFFC23B2E)
 
     internal fun apply(isDark: Boolean, color: AccentColor, pureBlack: Boolean, highContrast: Boolean = false) {
@@ -68,20 +80,23 @@ private fun variable(res: Int, vararg weights: Int) = FontFamily(
 val Display = variable(R.font.schibsted_grotesk, 700, 900)
 val Body = variable(R.font.figtree, 400, 500, 600, 700)
 
-private class Styles(val dark: Boolean, val contrast: Boolean) {
+/** Los colores de la app en un momento dado. */
+internal data class Palette(val bg: Color, val surface: Color, val line: Color, val ink: Color, val muted: Color, val accent: Color, val onAccent: Color)
+
+private class Styles(val ink: Color, val muted: Color) {
     val title = TextStyle(fontFamily = Display, fontWeight = FontWeight.Black, fontSize = 30.sp, letterSpacing = (-0.6).sp, color = Lumi.Ink)
     val heading = TextStyle(fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Lumi.Ink)
     val label = TextStyle(fontFamily = Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Lumi.Ink)
     val small = TextStyle(fontFamily = Body, fontWeight = FontWeight.Medium, fontSize = 12.sp, color = Lumi.Muted)
 }
 
-private var styles = Styles(true, false)
+private var styles = Styles(Color.Unspecified, Color.Unspecified)
 
 /** Los estilos solo se rehacen al cambiar de tema; así cada texto no fabrica el suyo al pintarse. */
 private fun current(): Styles {
-    val dark = Lumi.dark
-    val contrast = Lumi.contrast
-    if (styles.dark != dark || styles.contrast != contrast) styles = Styles(dark, contrast)
+    val ink = Lumi.Ink
+    val muted = Lumi.Muted
+    if (styles.ink != ink || styles.muted != muted) styles = Styles(ink, muted)
     return styles
 }
 
@@ -106,6 +121,16 @@ fun LumiTheme(
         ThemeMode.DARK -> true
     }
     Lumi.apply(dark, accent, pureBlack, highContrast)
+    // Al cambiar de tema o de color, cada color va del anterior al nuevo en medio segundo.
+    val fade = androidx.compose.animation.core.tween<Color>(480)
+    val bg by androidx.compose.animation.animateColorAsState(Lumi.targetBg(), fade, label = "fondo")
+    val surface by androidx.compose.animation.animateColorAsState(Lumi.targetSurface(), fade, label = "superficie")
+    val line by androidx.compose.animation.animateColorAsState(Lumi.targetLine(), fade, label = "linea")
+    val ink by androidx.compose.animation.animateColorAsState(Lumi.targetInk(), fade, label = "tinta")
+    val muted by androidx.compose.animation.animateColorAsState(Lumi.targetMuted(), fade, label = "suave")
+    val accentNow by androidx.compose.animation.animateColorAsState(Lumi.targetAccent(), fade, label = "acento")
+    val onAccent by androidx.compose.animation.animateColorAsState(Lumi.targetOnAccent(), fade, label = "sobreAcento")
+    Lumi.shown = Palette(bg, surface, line, ink, muted, accentNow, onAccent)
     val scheme = if (dark) {
         darkColorScheme(
             primary = Lumi.Accent, onPrimary = Lumi.OnAccent, background = Lumi.Bg, onBackground = Lumi.Ink,

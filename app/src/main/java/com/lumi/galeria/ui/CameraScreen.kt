@@ -7,6 +7,23 @@
 package com.lumi.galeria.ui
 
 import android.Manifest
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Camera
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Collections
+import androidx.compose.material.icons.outlined.Flip
+import androidx.compose.material.icons.outlined.GridOn
+import androidx.compose.material.icons.outlined.HighQuality
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.PhotoSizeSelectLarge
+import androidx.compose.material.icons.outlined.Restore
+import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.Straighten
+import androidx.compose.material.icons.outlined.SwipeDown
+import androidx.compose.material.icons.outlined.TouchApp
+import androidx.compose.material.icons.outlined.Vibration
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
+import androidx.compose.material.icons.automirrored.outlined.VolumeDown
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.ContentValues
@@ -479,6 +496,10 @@ fun CameraScreen(state: UiState, vm: LumiViewModel, actions: Actions, host: Came
     var liveLines by remember { mutableStateOf<List<LiveLine>>(emptyList()) }
     var pickedLine by remember { mutableStateOf<LiveLine?>(null) }
     val flashOverlay = remember { Animatable(0f) }
+    // Láminas de diafragma al disparar: de 0 (abiertas) a 1 (cerradas).
+    val iris = remember { Animatable(0f) }
+    // El nombre del modo nuevo, grande un instante en el centro.
+    var modeName by remember { mutableStateOf<String?>(null) }
     var screenLight by remember { mutableStateOf(false) }
     // Enfoque y luz.
     var focusAt by remember { mutableStateOf<Offset?>(null) }
@@ -579,7 +600,6 @@ fun CameraScreen(state: UiState, vm: LumiViewModel, actions: Actions, host: Came
         host.request?.video == true -> listOf(CamMode.VIDEO)
         host.request != null -> listOf(CamMode.PHOTO, CamMode.PORTRAIT, CamMode.NIGHT, CamMode.HDR)
         host.secure -> CamMode.entries.filter { it !in setOf(CamMode.PRIVATE, CamMode.TRACE, CamMode.DOCUMENT) }
-        host.standalone -> CamMode.entries.filter { it != CamMode.DOCUMENT }
         else -> CamMode.entries.toList()
     }
     fun phoneMode(m: CamMode): Int? = when (m) {
@@ -940,8 +960,14 @@ fun CameraScreen(state: UiState, vm: LumiViewModel, actions: Actions, host: Came
         /** Destello, sonido y vibración: la foto se hizo. */
         fun feedback() {
             scope.launch {
-                flashOverlay.snapTo(0.8f)
-                flashOverlay.animateTo(0f, tween(240))
+                if (prefs.iris) {
+                    iris.snapTo(0f)
+                    iris.animateTo(1f, tween(110))
+                    iris.animateTo(0f, tween(190))
+                } else {
+                    flashOverlay.snapTo(0.8f)
+                    flashOverlay.animateTo(0f, tween(240))
+                }
             }
             if (vm.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
             haptic(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -1428,7 +1454,7 @@ fun CameraScreen(state: UiState, vm: LumiViewModel, actions: Actions, host: Came
                 AsyncImage(Thumb(it.uri, 1024, it.modified), null, Modifier.fillMaxSize().alpha(traceAlpha), contentScale = ContentScale.Crop)
             }
             peaking?.let { Image(it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
-            GuideOverlay(guide, tilt)
+            GuideOverlay(guide, tilt, level = prefs.level && mode !in setOf(CamMode.QR, CamMode.TEXT, CamMode.DOCUMENT))
             focusAt?.let { at ->
                 FocusRing(at, locked, density)
                 val range = controller.cameraInfo?.exposureState?.exposureCompensationRange
@@ -1453,12 +1479,35 @@ fun CameraScreen(state: UiState, vm: LumiViewModel, actions: Actions, host: Came
             if (mode == CamMode.QR) QrFrame(qr != null)
             if (mode == CamMode.PRO) histo?.let { Histogram(it, Modifier.align(Alignment.TopEnd).padding(10.dp).size(96.dp, 48.dp)) }
             if (flashOverlay.value > 0f) Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = flashOverlay.value)))
+            IrisOverlay(iris.value)
+            androidx.compose.animation.AnimatedVisibility(
+                modeName != null,
+                enter = androidx.compose.animation.fadeIn(tween(120)) + androidx.compose.animation.scaleIn(tween(200), initialScale = 0.85f),
+                exit = androidx.compose.animation.fadeOut(tween(400)) + androidx.compose.animation.scaleOut(tween(400), targetScale = 1.08f),
+                modifier = Modifier.align(Alignment.Center),
+            ) {
+                Text(
+                    modeName.orEmpty(), style = TitleStyle.copy(fontSize = 40.sp), color = Color.White,
+                    modifier = Modifier.rotate(iconAngle).graphicsLayer { shadowElevation = 0f },
+                )
+            }
             if (showBigZoom) {
                 Text(
                     String.format(Locale.US, "%.1f×", zoom).replace('.', ','), style = TitleStyle.copy(fontSize = 40.sp), color = Color.White,
                     modifier = Modifier.align(Alignment.Center).rotate(iconAngle),
                 )
             }
+        }
+        // Al cambiar de modo, su nombre aparece en grande y se desvanece (no al abrir la cámara).
+        var firstMode by remember { mutableStateOf(true) }
+        LaunchedEffect(mode) {
+            if (firstMode) {
+                firstMode = false
+                return@LaunchedEffect
+            }
+            modeName = mode.label
+            delay(700)
+            modeName = null
         }
         LaunchedEffect(bigZoom) {
             if (bigZoom > 0) {
@@ -1491,8 +1540,8 @@ fun CameraScreen(state: UiState, vm: LumiViewModel, actions: Actions, host: Came
                     CamMode.TEXT, CamMode.DOCUMENT -> TopIcon(GearIcon, "Ajustes de la cámara", iconAngle) { vm.open(Screen.CameraSettings) }
                     else -> {
                         TopIcon(
-                            when (flash) { Flash.OFF -> BoltOffIcon; else -> BoltIcon }, tr("Flash") + ": " + tr(flash.label), iconAngle,
-                            on = flash == Flash.ON, badge = if (flash == Flash.AUTO) "A" else null,
+                            when (flash) { Flash.OFF -> BoltOffIcon; Flash.AUTO -> FlashAutoIcon; else -> BoltIcon }, tr("Flash") + ": " + tr(flash.label), iconAngle,
+                            on = flash == Flash.ON,
                         ) {
                             flash = Flash.entries[(flash.ordinal + 1) % Flash.entries.size]
                             say(when (flash) { Flash.AUTO -> "Flash automático"; Flash.ON -> "Flash encendido"; Flash.OFF -> "Flash apagado" })
@@ -1709,9 +1758,11 @@ fun CameraScreen(state: UiState, vm: LumiViewModel, actions: Actions, host: Came
                     Modifier.fillMaxWidth().height(44.dp).pointerInput(minZoom, maxZoom) {
                         var startZoom = 1f
                         var moved = 0f
+                        var lastZoom = 1f
                         detectHorizontalDragGestures(
                             onDragStart = {
                                 startZoom = zoom
+                                lastZoom = zoom
                                 moved = 0f
                                 dial = true
                                 zoomJob?.cancel()
@@ -1721,7 +1772,12 @@ fun CameraScreen(state: UiState, vm: LumiViewModel, actions: Actions, host: Came
                         ) { change, dx ->
                             change.consume()
                             moved += dx
-                            controller.setZoomRatio((startZoom * exp(-moved / 260f)).coerceIn(minZoom, maxZoom))
+                            val next = (startZoom * exp(-moved / 260f)).coerceIn(minZoom, maxZoom)
+                            val step = if (next < 2f) 0.1f else 0.5f
+                            if (kotlin.math.floor(next / step) != kotlin.math.floor(lastZoom / step)) haptic(HapticFeedbackConstants.CLOCK_TICK)
+                            if ((next == minZoom || next == maxZoom) && next != lastZoom) haptic(HapticFeedbackConstants.REJECT)
+                            lastZoom = next
+                            controller.setZoomRatio(next)
                         }
                     },
                     contentAlignment = Alignment.Center,
@@ -2240,19 +2296,22 @@ private fun ProControls(
         val manualExposure = iso != null || shutterNs != null
         if (range != null && range.upper > range.lower && !manualExposure) {
             ProRow("Luz", ev == 0, { onEv(0) }, String.format(Locale.US, "%+.1f", ev * step).replace('.', ',')) {
-                Slider(ev.toFloat(), { onEv(it.roundToInt()) }, valueRange = range.lower.toFloat()..range.upper.toFloat(), colors = colors)
+                DetentDial(
+                    (range.lower..range.upper).map { String.format(Locale.US, "%+.1f", it * step).replace('.', ',').replace("+0,0", "0") },
+                    ev - range.lower, { onEv(it + range.lower) }, Modifier.fillMaxWidth(),
+                )
             }
         }
         if (manual && isoSteps.size >= 2) {
             val i = isoSteps.indexOf(iso ?: -1).let { if (it < 0) isoSteps.indexOfFirst { s -> s >= 400 }.coerceAtLeast(0) else it }
             ProRow("ISO", iso == null, { onIso(null) }, iso?.toString() ?: "Auto") {
-                Slider(i.toFloat(), { onIso(isoSteps[it.roundToInt().coerceIn(0, isoSteps.lastIndex)]) }, valueRange = 0f..isoSteps.lastIndex.toFloat(), steps = (isoSteps.size - 2).coerceAtLeast(0), colors = colors)
+                DetentDial(isoSteps.map { "$it" }, i, { onIso(isoSteps[it]) }, Modifier.fillMaxWidth())
             }
         }
         if (manual && speeds.size >= 2) {
             val i = speeds.indexOf(shutterNs ?: -1L).let { if (it < 0) speeds.indexOfFirst { s -> s >= 1_000_000_000L / 60 }.coerceAtLeast(0) else it }
             ProRow("Vel.", shutterNs == null, { onShutter(null) }, shutterNs?.let { shutterText(it) } ?: "Auto") {
-                Slider(i.toFloat(), { onShutter(speeds[it.roundToInt().coerceIn(0, speeds.lastIndex)]) }, valueRange = 0f..speeds.lastIndex.toFloat(), steps = (speeds.size - 2).coerceAtLeast(0), colors = colors)
+                DetentDial(speeds.map { shutterText(it) }, i, { onShutter(speeds[it]) }, Modifier.fillMaxWidth())
             }
         }
         if (manual && (caps?.minFocus ?: 0f) > 0f) {
@@ -2281,74 +2340,122 @@ private fun ProControls(
     }
 }
 
-/** Todos los ajustes de la Cámara Lumi, en una página. */
+/**
+ * Todos los ajustes de la Cámara Lumi, en cuadrícula como el menú «Más» de las fotos: cada ajuste
+ * es un círculo con su icono, lleno si está activado, con su nombre y lo elegido debajo.
+ */
 @Composable
 fun CameraSettingsScreen(vm: LumiViewModel) {
     val prefs = vm.camPrefs
     var picking by remember { mutableStateOf<String?>(null) }
+    val guideNow = runCatching { Guide.valueOf(prefs.guide ?: "NONE") }.getOrDefault(Guide.NONE)
     Column(Modifier.fillMaxSize().background(Lumi.Bg).navigationBarsPadding()) {
         ScreenHeader("Ajustes de la cámara", "Cámara Lumi", onBack = { vm.back() })
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             SettingsTitle("Fotos")
-            ValueRow("Tamaño de foto", prefs.size.label) { picking = "size" }
-            ValueRow("Formato", prefs.format.label) { picking = "format" }
-            ToggleRow("Lumi Auto", "Aclara, da contraste, color y nitidez al guardar cada foto", vm.lumiAuto) { vm.setCameraOption(LumiViewModel.KEY_LUMI_AUTO, it) }
-            ToggleRow("Guardar también la original", "Además de la mejorada, la foto tal como sale del sensor", vm.keepOriginal) { vm.setCameraOption(LumiViewModel.KEY_KEEP_ORIGINAL, it) }
-            ToggleRow("Selfies como en un espejo", "Si no, salen como te ven los demás", vm.mirrorSelfie) { vm.setCameraOption(LumiViewModel.KEY_MIRROR, it) }
-            ValueRow("Guías", tr(runCatching { Guide.valueOf(prefs.guide ?: "NONE") }.getOrDefault(Guide.NONE).label)) { picking = "guide" }
+            SettingsGrid(
+                listOf(
+                    SettingTile(Icons.Outlined.AutoAwesome, "Lumi Auto", if (vm.lumiAuto) "Activado" else "Apagado", vm.lumiAuto) {
+                        vm.setCameraOption(LumiViewModel.KEY_LUMI_AUTO, !vm.lumiAuto)
+                    },
+                    SettingTile(Icons.Outlined.PhotoSizeSelectLarge, "Tamaño", prefs.size.label.substringBefore(" ("), null) { picking = "size" },
+                    SettingTile(Icons.Outlined.Image, "Formato", prefs.format.label.substringBefore(" ("), null) { picking = "format" },
+                    SettingTile(Icons.Outlined.Collections, "Original", if (vm.keepOriginal) "Se guarda" else "No", vm.keepOriginal) {
+                        vm.setCameraOption(LumiViewModel.KEY_KEEP_ORIGINAL, !vm.keepOriginal)
+                    },
+                    SettingTile(Icons.Outlined.Flip, "Espejo", if (vm.mirrorSelfie) "Selfies" else "No", vm.mirrorSelfie) {
+                        vm.setCameraOption(LumiViewModel.KEY_MIRROR, !vm.mirrorSelfie)
+                    },
+                    SettingTile(Icons.Outlined.GridOn, "Guías", guideNow.label, guideNow != Guide.NONE) { picking = "guide" },
+                    SettingTile(Icons.Outlined.Straighten, "Nivel", if (prefs.level) "Activado" else "Apagado", prefs.level) {
+                        prefs.chooseLevel(!prefs.level)
+                    },
+                    SettingTile(Icons.Outlined.Camera, "Obturador", if (prefs.iris) "Diafragma" else "Destello", prefs.iris) {
+                        prefs.chooseIris(!prefs.iris)
+                    },
+                    SettingTile(Icons.AutoMirrored.Outlined.VolumeUp, "Sonido", if (vm.shutterSound) "Activado" else "Apagado", vm.shutterSound) {
+                        vm.setCameraOption(LumiViewModel.KEY_SHUTTER_SOUND, !vm.shutterSound)
+                    },
+                ),
+            )
             SettingsTitle("Vídeo")
-            ValueRow("Calidad", prefs.video.label) { picking = "video" }
-            ValueRow("Fotogramas por segundo", "${prefs.fps}") { picking = "fps" }
-            ToggleRow("Estabilización", "Menos temblor al grabar andando", prefs.stabilize) { prefs.chooseStabilize(it) }
+            SettingsGrid(
+                listOf(
+                    SettingTile(Icons.Outlined.HighQuality, "Calidad", prefs.video.label, prefs.video == VideoQuality.UHD) { picking = "video" },
+                    SettingTile(Icons.Outlined.Speed, "Fotogramas", "${prefs.fps} fps", prefs.fps == 60) { picking = "fps" },
+                    SettingTile(Icons.Outlined.Vibration, "Estabilizar", if (prefs.stabilize) "Activado" else "Apagado", prefs.stabilize) {
+                        prefs.chooseStabilize(!prefs.stabilize)
+                    },
+                ),
+            )
             SettingsTitle("Controles")
-            ValueRow("Teclas de volumen", prefs.volume.label) { picking = "volume" }
-            ToggleRow("Deslizar hacia abajo gira la cámara", null, prefs.swipeFlip) { prefs.chooseSwipeFlip(it) }
-            ToggleRow("Dos toques giran la cámara", "El toque para enfocar tarda un instante más", prefs.doubleTapFlip) { prefs.chooseDoubleTapFlip(it) }
-            ToggleRow("Sonido al disparar", null, vm.shutterSound) { vm.setCameraOption(LumiViewModel.KEY_SHUTTER_SOUND, it) }
-            ToggleRow("Recordar modo, flash y temporizador", "Al abrir la cámara sigue como la dejaste", prefs.rememberSettings) { prefs.setRemember(it) }
+            SettingsGrid(
+                listOf(
+                    SettingTile(Icons.AutoMirrored.Outlined.VolumeDown, "Volumen", prefs.volume.label, null) { picking = "volume" },
+                    SettingTile(Icons.Outlined.SwipeDown, "Deslizar", if (prefs.swipeFlip) "Gira" else "No", prefs.swipeFlip) {
+                        prefs.chooseSwipeFlip(!prefs.swipeFlip)
+                    },
+                    SettingTile(Icons.Outlined.TouchApp, "Dos toques", if (prefs.doubleTapFlip) "Gira" else "No", prefs.doubleTapFlip) {
+                        prefs.chooseDoubleTapFlip(!prefs.doubleTapFlip)
+                    },
+                    SettingTile(Icons.Outlined.Restore, "Recordar", if (prefs.rememberSettings) "Activado" else "Apagado", prefs.rememberSettings) {
+                        prefs.setRemember(!prefs.rememberSettings)
+                    },
+                ),
+            )
             Text(
-                "Las fotos algo torcidas (hasta 8°) se enderezan solas. La resolución 4K y los 60 fotogramas solo se usan si el móvil los admite.",
-                style = SmallStyle, modifier = Modifier.padding(vertical = 14.dp),
+                "Los círculos llenos están activados. Las fotos algo torcidas (hasta 8°) se enderezan solas. La resolución 4K y los 60 fotogramas solo se usan si el móvil los admite.",
+                style = SmallStyle, modifier = Modifier.padding(vertical = 14.dp, horizontal = 4.dp),
             )
         }
     }
     when (picking) {
         "size" -> ChoiceDialog("Tamaño de foto", PhotoSize.entries, prefs.size, { it.label }, { prefs.chooseSize(it); picking = null }) { picking = null }
         "format" -> ChoiceDialog("Formato", PhotoFormat.entries, prefs.format, { it.label }, { prefs.chooseFormat(it); picking = null }) { picking = null }
-        "guide" -> ChoiceDialog("Guías", Guide.entries, runCatching { Guide.valueOf(prefs.guide ?: "NONE") }.getOrDefault(Guide.NONE), { it.label }, { prefs.chooseGuide(it.name); picking = null }) { picking = null }
+        "guide" -> ChoiceDialog("Guías", Guide.entries, guideNow, { it.label }, { prefs.chooseGuide(it.name); picking = null }) { picking = null }
         "video" -> ChoiceDialog("Calidad de vídeo", VideoQuality.entries, prefs.video, { it.label }, { prefs.chooseVideo(it); picking = null }) { picking = null }
         "fps" -> ChoiceDialog("Fotogramas por segundo", listOf(30, 60), prefs.fps, { "$it" }, { prefs.chooseFps(it); picking = null }) { picking = null }
         "volume" -> ChoiceDialog("Teclas de volumen", VolumeKeys.entries, prefs.volume, { it.label }, { prefs.chooseVolume(it); picking = null }) { picking = null }
     }
 }
 
+/** Un ajuste de la cuadrícula. [on] = null si no es de activar y desactivar. */
+private class SettingTile(val icon: ImageVector, val label: String, val value: String, val on: Boolean?, val onClick: () -> Unit)
+
 @Composable
 private fun SettingsTitle(text: String) {
-    Text(text, style = LabelStyle, color = Lumi.Accent, modifier = Modifier.padding(top = 16.dp, bottom = 4.dp))
+    Text(text, style = LabelStyle, color = Lumi.Accent, modifier = Modifier.padding(top = 14.dp, bottom = 4.dp, start = 4.dp))
 }
 
 @Composable
-private fun ValueRow(title: String, value: String, onClick: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).padding(vertical = 12.dp, horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(title, style = LabelStyle.copy(fontSize = 15.sp), modifier = Modifier.weight(1f))
-        Text(value, style = LabelStyle, color = Lumi.Accent)
+private fun SettingsGrid(tiles: List<SettingTile>) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Lumi.Surface).padding(vertical = 10.dp, horizontal = 4.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        tiles.chunked(4).forEach { line ->
+            Row(Modifier.fillMaxWidth()) {
+                line.forEach { tile -> SettingTileView(tile, Modifier.weight(1f)) }
+                repeat(4 - line.size) { Spacer(Modifier.weight(1f)) }
+            }
+        }
     }
 }
 
 @Composable
-private fun ToggleRow(title: String, hint: String?, on: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable { onChange(!on) }.padding(vertical = 8.dp, horizontal = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+private fun SettingTileView(tile: SettingTile, modifier: Modifier) {
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val filled = tile.on == true
+    val circle by animateColorAsState(if (filled) Lumi.Accent else Lumi.Accent.copy(alpha = 0.14f), label = "circulo")
+    val tint by animateColorAsState(if (filled) Lumi.OnAccent else Lumi.Accent, label = "icono")
+    Column(
+        modifier.pressScale(source).clip(RoundedCornerShape(16.dp)).clickable(source, null, onClick = tile.onClick).padding(vertical = 6.dp)
+            .semantics { contentDescription = tr(tile.label) + ": " + tr(tile.value) },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(title, style = LabelStyle.copy(fontSize = 15.sp))
-            if (hint != null) Text(hint, style = SmallStyle)
+        Box(Modifier.size(52.dp).clip(CircleShape).background(circle), contentAlignment = Alignment.Center) {
+            Icon(tile.icon, null, Modifier.size(22.dp), tint = tint)
         }
-        Switch(on, onChange, colors = SwitchDefaults.colors(checkedTrackColor = Lumi.Accent))
+        Text(tile.label, style = SmallStyle.copy(fontSize = 12.sp, fontWeight = FontWeight.SemiBold), color = Lumi.Ink, maxLines = 1)
+        Text(tile.value, style = SmallStyle.copy(fontSize = 11.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 

@@ -47,8 +47,9 @@ enum class AlbumView(val label: String) { GRID("Cuadrícula"), LIST("Lista"), ST
 /** Acceso pequeño de la cabecera de Álbumes: Favoritas y Privada. */
 @Composable
 fun QuickAccess(title: String, subtitle: String, icon: ImageVector, cover: MediaItem?, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Row(
-        modifier.clip(RoundedCornerShape(18.dp)).background(Lumi.Surface).clickable(onClick = onClick).padding(6.dp),
+        modifier.pressScale(press).clip(RoundedCornerShape(18.dp)).background(Lumi.Surface).clickable(press, androidx.compose.material3.ripple(), onClick = onClick).padding(6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -140,10 +141,11 @@ fun ViewSwitch(current: AlbumView, onPick: (AlbumView) -> Unit) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AlbumTile(name: String, subtitle: String, cover: MediaItem?, locked: Boolean, onLongClick: (() -> Unit)?, card: Boolean = false, onClick: () -> Unit) {
+    val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Box(
-        Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(20.dp))
+        Modifier.fillMaxWidth().aspectRatio(1f).pressScale(press).clip(RoundedCornerShape(20.dp))
             .background(if (locked) Lumi.Accent.copy(alpha = 0.22f) else Lumi.Surface)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+            .combinedClickable(press, androidx.compose.material3.ripple(), onClick = onClick, onLongClick = onLongClick),
     ) {
         if (!locked && cover != null) MediaThumb(cover, 512, Modifier.fillMaxSize())
         if (locked) {
@@ -198,7 +200,8 @@ fun AlbumStrip(name: String, subtitle: String, recent: List<MediaItem>, locked: 
 /** Álbum que arma Lumi (viajes, cosas), en la fila que se desliza de lado. */
 @Composable
 fun LumiAlbumCard(title: String, subtitle: String, cover: MediaItem, onClick: () -> Unit) {
-    Column(Modifier.width(132.dp).clip(RoundedCornerShape(18.dp)).clickable(onClick = onClick), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    Column(Modifier.width(132.dp).pressScale(press).clip(RoundedCornerShape(18.dp)).clickable(press, androidx.compose.material3.ripple(), onClick = onClick), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         MediaThumb(cover, 320, Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(18.dp)))
         Column(Modifier.padding(horizontal = 4.dp)) {
             Text(title, style = HeadingStyle.copy(fontSize = 14.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)

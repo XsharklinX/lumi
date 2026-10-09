@@ -159,6 +159,24 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import androidx.palette.graphics.Palette
 import coil.compose.AsyncImage
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material.icons.outlined.Replay10
+import androidx.compose.material.icons.outlined.Forward10
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.outlined.Repeat
+import androidx.compose.material.icons.outlined.ScreenRotation
+import androidx.compose.material.icons.outlined.PictureInPictureAlt
+import androidx.compose.material.icons.outlined.ScreenLockPortrait
+import androidx.compose.material.icons.outlined.GraphicEq
+import androidx.compose.material.icons.outlined.RecordVoiceOver
+import androidx.compose.material.icons.outlined.Subtitles
+import androidx.compose.material.icons.outlined.FormatSize
+import androidx.compose.material.icons.outlined.FileOpen
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Gif
+import androidx.compose.material.icons.automirrored.outlined.VolumeUp
 import com.lumi.galeria.LumiViewModel
 import com.lumi.galeria.Screen
 import com.lumi.galeria.Source
@@ -361,6 +379,17 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
     var looping by remember { mutableStateOf(false) }
     // Aviso breve en pantalla al saltar con doble toque ("+10 s").
     var flash by remember { mutableStateOf<String?>(null) }
+    // El salto que se está enseñando: lado (1 adelante, -1 atrás) y segundos acumulados.
+    var seekShown by remember { mutableStateOf<Pair<Int, Long>?>(null) }
+    var seekCount by remember { mutableIntStateOf(0) }
+    LaunchedEffect(seekCount) {
+        if (seekCount > 0) {
+            delay(900)
+            seekShown = null
+        }
+    }
+    // Chispas del corazón al marcar una favorita.
+    var heartBurst by remember { mutableIntStateOf(0) }
     // Pasar las fotos solas, bloquear los toques durante un vídeo y forzar el apaisado.
     var slideshow by remember { mutableStateOf(screen.slideshow) }
     var touchLock by remember { mutableStateOf(false) }
@@ -438,7 +467,10 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
         val target = (player.currentPosition + deltaMs).coerceIn(0, maxOf(duration, 0))
         player.seekTo(target)
         position = target
-        flash = if (deltaMs > 0) "+${deltaMs / 1000} s" else "−${-deltaMs / 1000} s"
+        val side = if (deltaMs > 0) 1 else -1
+        val before = seekShown
+        seekShown = if (before != null && before.first == side) side to before.second + deltaMs / 1000 * side else side to deltaMs / 1000 * side
+        seekCount++
     }
 
     fun close() {
@@ -576,6 +608,19 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                 }
             },
         ) { page ->
+            Box(
+                Modifier.fillMaxSize().graphicsLayer {
+                    val offset = (pager.currentPage - page) + pager.currentPageOffsetFraction
+                    if (offset > 0f && offset < 1.05f) {
+                        val f = offset.coerceIn(0f, 1f)
+                        translationX = (size.width + 16.dp.toPx()) * f
+                        val s = 1f - 0.14f * f
+                        scaleX = s
+                        scaleY = s
+                        alpha = 1f - 0.7f * f
+                    }
+                },
+            ) {
             val item = items[page]
             val active = page == pager.currentPage
             if (item.isVideo) {
@@ -587,9 +632,13 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                     onTap = { if (info) info = false else chrome = !chrome },
                     onToggle = { if (player.isPlaying) player.pause() else player.play() },
                     onSeekBy = ::seekBy,
+                    seeking = if (active) seekShown else null,
                     onAdjust = ::adjust,
                     fast = active && holdFast,
-                    onHold = { holdFast = it },
+                    onHold = {
+                        if (it && !holdFast) view.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK)
+                        holdFast = it
+                    },
                 )
             } else {
                 val moves = !item.isExternal && state.index[item.id]?.motion == true
@@ -605,6 +654,7 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                     )
                     if (active && moves && motionHold) MotionLayer(item, Modifier.fillMaxSize())
                 }
+            }
             }
         }
 
@@ -784,15 +834,28 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                         )
                     }
                     if (!current.isExternal) {
-                        BarIcon(
-                            if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                            if (isFavorite) "Quitar de favoritas" else "Favorita",
-                            {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                vm.toggleFavorite(listOf(current.id))
-                            },
-                            if (isFavorite) Color(0xFFFF4D6D) else Color.White,
-                        )
+                        Box(contentAlignment = Alignment.Center) {
+                            val beat = remember { Animatable(1f) }
+                            LaunchedEffect(heartBurst) {
+                                if (heartBurst > 0) {
+                                    beat.snapTo(0.6f)
+                                    beat.animateTo(1f, spring(dampingRatio = 0.35f, stiffness = 500f))
+                                }
+                            }
+                            HeartBurst(heartBurst, Color(0xFFFF4D6D))
+                            Box(Modifier.graphicsLayer { scaleX = beat.value; scaleY = beat.value }) {
+                                BarIcon(
+                                    if (isFavorite) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                                    if (isFavorite) "Quitar de favoritas" else "Favorita",
+                                    {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        if (!isFavorite) heartBurst++
+                                        vm.toggleFavorite(listOf(current.id))
+                                    },
+                                    if (isFavorite) Color(0xFFFF4D6D) else Color.White,
+                                )
+                            }
+                        }
                         BarIcon(Icons.Filled.MoreVert, "Más", { more = true }, Color.White)
                     }
                 }
@@ -852,19 +915,19 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                                     else -> 1f
                                 }
                             }
-                            RoundControl("−10", "Atrás 10 segundos", false, accent) { seekBy(-10_000) }
+                            IconControl(Icons.Outlined.Replay10, "Atrás 10 segundos") { seekBy(-10_000) }
                             Box(
                                 Modifier.size(60.dp).clip(CircleShape).background(accent).clickable { if (playing) player.pause() else player.play() },
                                 contentAlignment = Alignment.Center,
                             ) {
                                 if (playing) PauseGlyph(OnTint, Modifier.size(24.dp)) else Icon(Icons.Filled.PlayArrow, "Reproducir", Modifier.size(32.dp), tint = OnTint)
                             }
-                            RoundControl("+10", "Adelante 10 segundos", false, accent) { seekBy(10_000) }
+                            IconControl(Icons.Outlined.Forward10, "Adelante 10 segundos") { seekBy(10_000) }
                             Box(
                                 Modifier.size(44.dp).clip(CircleShape).clickable { videoOptions = true },
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Icon(Icons.Filled.Settings, "Opciones del vídeo", Modifier.size(24.dp), tint = Color.White)
+                                Icon(Icons.Outlined.Tune, "Opciones del vídeo", Modifier.size(24.dp), tint = Color.White)
                                 // Un punto avisa de que hay algo cambiado dentro.
                                 if (muted || looping || boost > 100 || voice || (cues.isNotEmpty() && subsOn)) {
                                     Box(Modifier.align(Alignment.TopEnd).padding(9.dp).size(7.dp).clip(CircleShape).background(accent))
@@ -914,7 +977,7 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
             ) {
                 Text("Opciones del vídeo", style = HeadingStyle.copy(fontSize = 20.sp), modifier = Modifier.padding(bottom = 6.dp))
                 OptionGroup("Reproducción")
-                OptionRow("Velocidad", if (speed % 1f == 0f) "${speed.toInt()}×" else "$speed×") {
+                OptionRow("Velocidad", if (speed % 1f == 0f) "${speed.toInt()}×" else "$speed×", icon = Icons.Outlined.Speed) {
                     speed = when (speed) {
                         1f -> 1.5f
                         1.5f -> 2f
@@ -922,26 +985,26 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                         else -> 1f
                     }
                 }
-                OptionRow("Repetir", if (looping) "Sí" else "No") { looping = !looping }
-                OptionRow("Girar la pantalla", if (landscape) "Sí" else "No") { landscape = !landscape }
-                OptionRow("Ventana flotante", null, "Sigue viéndose encima de otras apps") { videoOptions = false; actions.pip() }
-                OptionRow("Bloquear la pantalla", null, "Para que un toque sin querer no lo pare") {
+                OptionRow("Repetir", if (looping) "Sí" else "No", icon = Icons.Outlined.Repeat) { looping = !looping }
+                OptionRow("Girar la pantalla", if (landscape) "Sí" else "No", icon = Icons.Outlined.ScreenRotation) { landscape = !landscape }
+                OptionRow("Ventana flotante", null, "Sigue viéndose encima de otras apps", icon = Icons.Outlined.PictureInPictureAlt) { videoOptions = false; actions.pip() }
+                OptionRow("Bloquear la pantalla", null, "Para que un toque sin querer no lo pare", icon = Icons.Outlined.ScreenLockPortrait) {
                     videoOptions = false
                     touchLock = true
                     chrome = false
                 }
                 OptionGroup("Sonido")
-                OptionRow("Sonido", if (muted) "Silenciado" else "Activado") { muted = !muted }
-                OptionRow("Volumen extra", "$boost %", "Para vídeos grabados muy bajos") { boost = if (boost >= 200) 100 else boost + 50 }
-                OptionRow("Realzar voces", if (voice) "Sí" else "No", "Se entiende mejor a quien habla") { voice = !voice }
+                OptionRow("Sonido", if (muted) "Silenciado" else "Activado", icon = Icons.AutoMirrored.Outlined.VolumeUp) { muted = !muted }
+                OptionRow("Volumen extra", "$boost %", "Para vídeos grabados muy bajos", icon = Icons.Outlined.GraphicEq) { boost = if (boost >= 200) 100 else boost + 50 }
+                OptionRow("Realzar voces", if (voice) "Sí" else "No", "Se entiende mejor a quien habla", icon = Icons.Outlined.RecordVoiceOver) { voice = !voice }
                 OptionGroup("Subtítulos")
                 if (cues.isEmpty()) {
-                    OptionRow("Cargar subtítulos", null, "Elige un archivo .srt del teléfono") {
+                    OptionRow("Cargar subtítulos", null, "Elige un archivo .srt del teléfono", icon = Icons.Outlined.Subtitles) {
                         pickSubs.launch(arrayOf("application/x-subrip", "text/plain", "application/octet-stream", "*/*"))
                     }
                 } else {
-                    OptionRow("Mostrar", if (subsOn) "Sí" else "No") { subsOn = !subsOn }
-                    OptionRow("Tamaño", listOf("Pequeño", "Mediano", "Grande")[subSize]) { subSize = (subSize + 1) % 3 }
+                    OptionRow("Mostrar", if (subsOn) "Sí" else "No", icon = Icons.Outlined.Subtitles) { subsOn = !subsOn }
+                    OptionRow("Tamaño", listOf("Pequeño", "Mediano", "Grande")[subSize], icon = Icons.Outlined.FormatSize) { subSize = (subSize + 1) % 3 }
                     Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Column(Modifier.weight(1f)) {
                             Text("Sincronizar", style = LabelStyle.copy(fontSize = 15.sp))
@@ -950,12 +1013,12 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                         PillButton("−0,5 s", { subShift -= 500 }, primary = false)
                         PillButton("+0,5 s", { subShift += 500 }, primary = false)
                     }
-                    OptionRow("Otro archivo", null) { pickSubs.launch(arrayOf("*/*")) }
+                    OptionRow("Otro archivo", null, icon = Icons.Outlined.FileOpen) { pickSubs.launch(arrayOf("*/*")) }
                 }
                 if (!current.isExternal) {
                     OptionGroup("Crear")
-                    OptionRow("Guardar fotograma", null, "El momento que se ve, como foto") { videoOptions = false; vm.saveFrame(current, position) }
-                    OptionRow("Hacer un GIF", null, "Un trozo de hasta 8 segundos") { videoOptions = false; leaveTo(Screen.Gif(current.id)) }
+                    OptionRow("Guardar fotograma", null, "El momento que se ve, como foto", icon = Icons.Outlined.Image) { videoOptions = false; vm.saveFrame(current, position) }
+                    OptionRow("Hacer un GIF", null, "Un trozo de hasta 8 segundos", icon = Icons.Outlined.Gif) { videoOptions = false; leaveTo(Screen.Gif(current.id)) }
                 }
             }
         }
@@ -1352,13 +1415,27 @@ private fun FaceTags(
 /** Mando redondo de la fila del reproductor: un texto corto, encendido si cambia algo. */
 @Composable
 private fun RoundControl(label: String, description: String, on: Boolean, accent: Color, onClick: () -> Unit) {
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    // La velocidad, en una píldora: se ensancha si hace falta («1,5×»).
     Box(
-        Modifier.size(44.dp).clip(CircleShape).background(if (on) accent else Color.White.copy(alpha = 0.12f)).clickable(onClick = onClick)
+        Modifier.pressScale(source).height(36.dp).widthIn(min = 44.dp).clip(CircleShape).background(if (on) accent else Color.White.copy(alpha = 0.14f))
+            .clickable(source, null, onClick = onClick).padding(horizontal = 10.dp)
             .semantics { contentDescription = tr(description) },
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, style = LabelStyle.copy(fontSize = 13.sp, fontWeight = FontWeight.Bold), color = if (on) OnTint else Color.White, maxLines = 1)
+        Text(label.replace('.', ','), style = LabelStyle.copy(fontSize = 13.sp, fontWeight = FontWeight.Bold), color = if (on) OnTint else Color.White, maxLines = 1)
     }
+}
+
+/** Un mando de la barra del vídeo: icono en un círculo, que se hunde al pulsarlo. */
+@Composable
+private fun IconControl(icon: ImageVector, description: String, onClick: () -> Unit) {
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    Box(
+        Modifier.pressScale(source).size(46.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.12f))
+            .clickable(source, null, onClick = onClick).semantics { contentDescription = tr(description) },
+        contentAlignment = Alignment.Center,
+    ) { Icon(icon, null, Modifier.size(26.dp), tint = Color.White) }
 }
 
 /** Acción de abajo del visor: icono con su nombre, sin caja alrededor. */
@@ -1381,11 +1458,18 @@ private fun OptionGroup(title: String) {
 
 /** Una opción de la hoja: nombre, explicación corta y, a la derecha, cómo está ahora. */
 @Composable
-private fun OptionRow(title: String, value: String?, hint: String? = null, onClick: () -> Unit) {
+private fun OptionRow(title: String, value: String?, hint: String? = null, icon: ImageVector? = null, onClick: () -> Unit) {
+    val source = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(vertical = 10.dp),
+        Modifier.fillMaxWidth().pressScale(source, 0.98f).clip(RoundedCornerShape(14.dp)).clickable(source, null, onClick = onClick).padding(vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
+        if (icon != null) {
+            Box(Modifier.size(38.dp).clip(CircleShape).background(Lumi.Accent.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+                Icon(icon, null, Modifier.size(20.dp), tint = Lumi.Accent)
+            }
+        }
         Column(Modifier.weight(1f)) {
             Text(title, style = LabelStyle.copy(fontSize = 15.sp))
             if (hint != null) Text(hint, style = SmallStyle)
@@ -1617,6 +1701,7 @@ private fun VideoPage(
     onTap: () -> Unit,
     onToggle: () -> Unit,
     onSeekBy: (Long) -> Unit,
+    seeking: Pair<Int, Long>?,
     onAdjust: (left: Boolean, amount: Float) -> Unit,
     fast: Boolean,
     onHold: (Boolean) -> Unit,
@@ -1625,12 +1710,17 @@ private fun VideoPage(
     val hold by rememberUpdatedState(onHold)
     val seek by rememberUpdatedState(onSeekBy)
     val tune by rememberUpdatedState(onAdjust)
+    val seekingNow by rememberUpdatedState(seeking)
     Box(
         Modifier
             .fillMaxSize()
             .pointerInput(Unit) {
                 detectTapGestures(
-                    onTap = { tap() },
+                    // Con un salto a la vista, cada toque en ese lado suma diez segundos más.
+                    onTap = { point ->
+                        val side = if (point.x < size.width / 2) -1 else 1
+                        if (seekingNow?.first == side) seek(side * 10_000L) else tap()
+                    },
                     onDoubleTap = { point -> seek(if (point.x < size.width / 2) -10_000L else 10_000L) },
                 )
             }
@@ -1686,13 +1776,10 @@ private fun VideoPage(
             )
         }
         if (fast) {
-            Text(
-                "⏩ 2×",
-                style = HeadingStyle,
-                color = Color.White,
-                modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp).clip(CircleShape)
-                    .background(Color.Black.copy(alpha = 0.6f)).padding(horizontal = 16.dp, vertical = 8.dp),
-            )
+            FastPill(Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 64.dp))
+        }
+        seeking?.let { (side, seconds) ->
+            SeekRipple(side > 0, kotlin.math.abs(seconds), Modifier.align(if (side > 0) Alignment.CenterEnd else Alignment.CenterStart))
         }
         if (flash != null) {
             Text(
@@ -1827,8 +1914,9 @@ private fun MoreSheet(
 /** Botón redondo del menú «Más»: icono en un círculo con su nombre debajo. */
 @Composable
 private fun QuickButton(icon: ImageVector, label: String, modifier: Modifier, onClick: () -> Unit) {
+    val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Column(
-        modifier.clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick).padding(vertical = 6.dp),
+        modifier.pressScale(press).clip(RoundedCornerShape(16.dp)).clickable(press, androidx.compose.material3.ripple(), onClick = onClick).padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {

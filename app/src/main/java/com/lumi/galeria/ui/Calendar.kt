@@ -1,5 +1,7 @@
 package com.lumi.galeria.ui
 
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -218,7 +220,7 @@ fun StoryRow(stories: List<Story>, onOpen: (Story) -> Unit) {
                     .clip(RoundedCornerShape(if (stories.size == 1) 24.dp else 18.dp))
                     .clickable { onOpen(story) },
             ) {
-                MediaThumb(story.cover, if (stories.size == 1) 1024 else 512, Modifier.fillMaxSize())
+                LivingCover(story, if (stories.size == 1) 1024 else 512)
                 Box(Modifier.fillMaxSize().background(Brush.verticalGradient(0.4f to Color.Transparent, 1f to Color.Black.copy(alpha = 0.78f))))
                 Column(Modifier.align(Alignment.BottomStart).padding(if (stories.size == 1) 16.dp else 10.dp)) {
                     Text(
@@ -236,3 +238,35 @@ fun StoryRow(stories: List<Story>, onOpen: (Story) -> Unit) {
 /** La mejor portada para [items]: nítida, con caras, nunca un documento ni una captura. */
 fun UiState.coverOf(items: List<MediaItem>): MediaItem =
     com.lumi.galeria.data.pickCover(items, favorites, index, faceScore, showcaseOut)
+
+/**
+ * La portada de un recuerdo, viva: se acerca muy despacio y cada pocos segundos pasa, con un fundido,
+ * a otra de sus fotos. Con las animaciones del móvil quitadas, se queda quieta.
+ */
+@Composable
+private fun LivingCover(story: Story, px: Int) {
+    val state = LocalState.current
+    val still = reducedMotion()
+    val pool = remember(story.ids, state.items.size) {
+        val byId = state.items.associateBy { it.id }
+        (listOf(story.cover) + story.ids.take(16).mapNotNull { byId[it] }.filter { !it.isVideo && it.id !in state.showcaseOut })
+            .distinctBy { it.id }.take(5)
+    }
+    var shown by remember(pool) { androidx.compose.runtime.mutableIntStateOf(0) }
+    androidx.compose.runtime.LaunchedEffect(pool, still) {
+        if (still || pool.size < 2) return@LaunchedEffect
+        while (true) {
+            kotlinx.coroutines.delay(6500)
+            shown = (shown + 1) % pool.size
+        }
+    }
+    val drift = androidx.compose.animation.core.rememberInfiniteTransition(label = "recuerdo")
+    val zoom by drift.animateFloat(
+        1f, if (still) 1f else 1.12f,
+        androidx.compose.animation.core.infiniteRepeatable(androidx.compose.animation.core.tween(9000, easing = androidx.compose.animation.core.LinearEasing), androidx.compose.animation.core.RepeatMode.Reverse),
+        label = "acercar",
+    )
+    androidx.compose.animation.Crossfade(pool.getOrElse(shown) { story.cover }, animationSpec = androidx.compose.animation.core.tween(900), label = "portada") { item ->
+        MediaThumb(item, px, Modifier.fillMaxSize().graphicsLayer { scaleX = zoom; scaleY = zoom })
+    }
+}

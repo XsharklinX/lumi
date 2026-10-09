@@ -194,7 +194,7 @@ fun YearReviewScreen(screen: Screen.YearReview, state: UiState, vm: LumiViewMode
                     Text(title, style = TitleStyle.copy(fontSize = 40.sp), color = Color.White)
                     Text(
                         listOfNotNull(
-                            countText(s.photos, "foto", "fotos"),
+                            countText(rollingNumber(s.photos.toDouble(), 1200).toInt(), "foto", "fotos"),
                             if (s.videos > 0) countText(s.videos, "vídeo", "vídeos") else null,
                             if (s.trips > 0) countText(s.trips, "viaje", "viajes") else null,
                         ).joinToString(" · "),

@@ -4,6 +4,27 @@ Una entrada por versión, la más reciente arriba. Cada idioma admite 500 caract
 El bloque de cada versión se pega tal cual en «Notas de la versión»: las etiquetas `<es-ES>` y
 `<en-US>` son las que usa Play Console para separar los idiomas.
 
+## 1.2.0 (código 1200)
+
+```
+<es-ES>
+• Todo más fluido: botones con rebote, pantallas que crecen desde lo que tocas y títulos que se encogen.
+• Recuerdos que se mueven, portadas con su color y fotos que se apartan al pasarlas.
+• Agita el móvil para deshacer y arrastra fotos a un álbum.
+• Confeti al liberar espacio.
+• Cámara: diafragma al disparar, ruedas con muescas y ajustes en cuadrícula.
+• Reproductor y avisos rediseñados, iconos nuevos.
+</es-ES>
+<en-US>
+• Smoother everywhere: bouncy buttons, screens that grow from what you tap and titles that shrink.
+• Moving memories, covers in their own colors and photos that step aside as you swipe.
+• Shake to undo and drag photos into an album.
+• Confetti when you free up space.
+• Camera: aperture shutter, notched dials and settings in a grid.
+• Redesigned player and notices, new icons.
+</en-US>
+```
+
 ## 1.1.0 (código 1100)
 
 ```

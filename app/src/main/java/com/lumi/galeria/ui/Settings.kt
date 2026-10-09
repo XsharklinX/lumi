@@ -1,6 +1,7 @@
 package com.lumi.galeria.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -161,7 +162,11 @@ fun SettingsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                     )
                 }
 
-                Group("Fotos y álbumes", words = "destacar estrella mejor foto dia orden recientes antiguas ocultos esconder carpetas sistema") {
+                Group("Fotos y álbumes", words = "destacar estrella mejor foto dia orden recientes antiguas ocultos esconder carpetas sistema agitar deshacer") {
+                    Item(
+                        Glyph.Icon(Icons.Filled.Refresh), "Agitar para deshacer", "Justo después de borrar o mover algo, agita el móvil para deshacerlo.",
+                        words = "agitar deshacer sacudir", toggle = vm.shakeUndo, onClick = { vm.chooseShakeUndo(!vm.shakeUndo) },
+                    )
                     Item(
                         Glyph.Icon(Icons.AutoMirrored.Filled.List), "Orden de la pantalla Fotos",
                         value = if (state.oldestFirst) "Antiguas primero" else "Recientes primero", words = "recientes antiguas",
@@ -509,8 +514,28 @@ private fun matches(words: String): Boolean {
 @Composable
 private fun Group(title: String, words: String, content: @Composable () -> Unit) {
     if (!matches("$title $words")) return
-    Text(title, style = SmallStyle.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold), color = Lumi.Accent, modifier = Modifier.padding(start = 8.dp, top = 14.dp, bottom = 2.dp))
-    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Lumi.Surface)) { content() }
+    val color = groupColor(title)
+    Text(title, style = SmallStyle.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold), color = Lumi.Muted, modifier = Modifier.padding(start = 8.dp, top = 16.dp, bottom = 4.dp))
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp)).background(Lumi.Surface)) {
+        androidx.compose.runtime.CompositionLocalProvider(LocalGroupColor provides color) { content() }
+    }
+}
+
+/** El color de los iconos de cada sección de ajustes. */
+private val LocalGroupColor = compositionLocalOf { Color(0xFF7C5CFF) }
+
+/** Cada sección con su color, para encontrar las cosas de un vistazo. */
+private fun groupColor(title: String): Color = when (title) {
+    "Apariencia" -> Color(0xFF7C5CFF)
+    "Fotos y álbumes" -> Color(0xFF3D7BF5)
+    "Privacidad y seguridad" -> Color(0xFF2FA37A)
+    "Almacenamiento" -> Color(0xFFE59A3B)
+    "Análisis de las fotos" -> Color(0xFF3BA3B5)
+    "Cámara" -> Color(0xFFE5709B)
+    "Accesibilidad" -> Color(0xFF5B6B8C)
+    "Fondo y avisos" -> Color(0xFFB0832F)
+    "Acerca de" -> Color(0xFF8A8799)
+    else -> listOf(Color(0xFF7C5CFF), Color(0xFF3D7BF5), Color(0xFF2FA37A), Color(0xFFE59A3B), Color(0xFFE5709B))[(title.hashCode() and 0x7fffffff) % 5]
 }
 
 /**
@@ -529,21 +554,24 @@ private fun Item(
     onClick: (() -> Unit)? = null,
 ) {
     if (!matches("$title ${subtitle.orEmpty()} $words")) return
+    val tone = LocalGroupColor.current
+    val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Row(
         Modifier
             .fillMaxWidth()
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .then(if (onClick != null) Modifier.pressScale(press, 0.98f).clickable(press, androidx.compose.material3.ripple(), onClick = onClick) else Modifier)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Box(Modifier.size(36.dp).clip(CircleShape).background(Lumi.Accent.copy(alpha = 0.15f)), contentAlignment = Alignment.Center) {
+        // El icono en blanco sobre un círculo del color de la sección.
+        Box(Modifier.size(36.dp).clip(CircleShape).background(tone), contentAlignment = Alignment.Center) {
             when (glyph) {
-                is Glyph.Icon -> Icon(glyph.vector, null, Modifier.size(19.dp), tint = Lumi.Accent)
-                is Glyph.Dot -> Box(Modifier.size(16.dp).clip(CircleShape).background(glyph.color))
-                is Glyph.Letters -> Text(glyph.text, style = LabelStyle.copy(fontWeight = FontWeight.Bold), color = Lumi.Accent)
-                Glyph.Half -> Box(Modifier.size(18.dp).clip(CircleShape).background(Lumi.Bg)) {
-                    Box(Modifier.size(width = 9.dp, height = 18.dp).background(Lumi.Accent))
+                is Glyph.Icon -> Icon(glyph.vector, null, Modifier.size(19.dp), tint = Color.White)
+                is Glyph.Dot -> Box(Modifier.size(16.dp).clip(CircleShape).background(glyph.color).border(2.dp, Color.White, CircleShape))
+                is Glyph.Letters -> Text(glyph.text, style = LabelStyle.copy(fontWeight = FontWeight.Bold), color = Color.White)
+                Glyph.Half -> Box(Modifier.size(18.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.35f))) {
+                    Box(Modifier.size(width = 9.dp, height = 18.dp).background(Color.White))
                 }
             }
         }
@@ -557,7 +585,10 @@ private fun Item(
                 onCheckedChange = { onClick?.invoke() },
                 colors = SwitchDefaults.colors(checkedTrackColor = Lumi.Accent, checkedThumbColor = Lumi.OnAccent),
             )
-            value != null -> Text(value, style = LabelStyle, color = Lumi.Accent)
+            value != null -> Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(value, style = LabelStyle, color = Lumi.Muted)
+                if (onClick != null) Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, Modifier.size(18.dp), tint = Lumi.Muted)
+            }
             link -> Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, Modifier.size(20.dp), tint = Lumi.Muted)
         }
     }
@@ -599,7 +630,7 @@ private fun UsageCard(count: Int, usage: LongArray, recoverable: Long, onClick: 
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Row(verticalAlignment = Alignment.Bottom) {
-            Text(formatSize(total), style = TitleStyle.copy(fontSize = 26.sp), modifier = Modifier.weight(1f))
+            Text(formatSize(rollingNumber(total.toDouble()).toLong()), style = TitleStyle.copy(fontSize = 26.sp), modifier = Modifier.weight(1f))
             Text(countText(count, "elemento", "elementos"), style = SmallStyle.copy(fontSize = 13.sp))
         }
         if (total > 0) {

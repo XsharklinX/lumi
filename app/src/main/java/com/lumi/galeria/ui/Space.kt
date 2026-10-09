@@ -178,12 +178,15 @@ private fun StorageBar(total: Long, free: Long) {
         Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(Lumi.Surface).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        // El espacio libre sube rodando y la barra se llena con suavidad.
+        val shownFree = rollingNumber(free.toDouble())
+        val part by androidx.compose.animation.core.animateFloatAsState(if (total > 0) used.toFloat() / total else 0f, androidx.compose.animation.core.tween(800), label = "uso")
         Row(verticalAlignment = Alignment.Bottom) {
-            Text(formatSize(free), style = TitleStyle.copy(fontSize = 30.sp), modifier = Modifier.weight(1f))
+            Text(formatSize(shownFree.toLong()), style = TitleStyle.copy(fontSize = 30.sp), modifier = Modifier.weight(1f))
             Text("${formatSize(free)} libres de ${formatSize(total)}", style = SmallStyle)
         }
         Box(Modifier.fillMaxWidth().height(10.dp).clip(RoundedCornerShape(5.dp)).background(Lumi.Bg)) {
-            Box(Modifier.fillMaxWidth(if (total > 0) used.toFloat() / total else 0f).height(10.dp).background(Lumi.Accent))
+            Box(Modifier.fillMaxWidth(part).height(10.dp).background(Lumi.Accent))
         }
     }
 }

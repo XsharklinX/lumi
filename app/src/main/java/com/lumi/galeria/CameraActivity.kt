@@ -110,6 +110,9 @@ class CameraActivity : FragmentActivity() {
                     when (val top = vm.backStack.lastOrNull()) {
                         Screen.Camera -> com.lumi.galeria.ui.CameraScreen(state, vm, actions, host)
                         Screen.CameraSettings -> com.lumi.galeria.ui.CameraSettingsScreen(vm)
+                        // Lo escaneado se guarda aquí mismo, sin pasar por la galería.
+                        Screen.SaveDoc -> com.lumi.galeria.ui.SaveDocScreen(vm)
+                        Screen.IdCard -> com.lumi.galeria.ui.IdCardScreen(vm)
                         null -> LaunchedEffect(Unit) { finish() }
                         else -> LaunchedEffect(top) {
                             forward(top)

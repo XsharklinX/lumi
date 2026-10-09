@@ -20,8 +20,8 @@ android {
         // Android 11: la papelera del sistema (createTrashRequest) existe desde aquí.
         minSdk = 30
         targetSdk = 36
-        versionCode = 1100
-        versionName = "1.1.0"
+        versionCode = 1200
+        versionName = "1.2.0"
         // Los modelos de reconocimiento traen código nativo por arquitectura. En Google Play cada
         // teléfono descarga solo la suya; x86_64 es para el emulador.
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
@@ -85,6 +85,8 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-core")
+    // Todos los iconos de Material, del mismo estilo; la build final solo guarda los que se usan.
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.core:core-ktx:1.15.0")
     // Pantalla de arranque con el logo animado, igual en todas las versiones de Android.

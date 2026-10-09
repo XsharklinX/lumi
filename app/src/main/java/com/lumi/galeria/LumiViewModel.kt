@@ -2377,6 +2377,27 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Bytes recién liberados, para celebrarlo; null si no hay nada que celebrar. */
+    var celebration by mutableStateOf<Long?>(null)
+
+    fun celebrate(bytes: Long) {
+        if (bytes > 0) celebration = bytes
+    }
+
+    /** Agitar el móvil justo después de borrar o mover algo pregunta si deshacerlo. */
+    var shakeUndo by mutableStateOf(prefs.getBoolean("shakeUndo", true))
+        private set
+
+    fun chooseShakeUndo(on: Boolean) {
+        shakeUndo = on
+        prefs.edit().putBoolean("shakeUndo", on).apply()
+    }
+
+    fun clearMessage() {
+        messageJob?.cancel()
+        _state.update { it.copy(message = null) }
+    }
+
     fun say(text: String) {
         messageJob?.cancel()
         _state.update { it.copy(message = text) }

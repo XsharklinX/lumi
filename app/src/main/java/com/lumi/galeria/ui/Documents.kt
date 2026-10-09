@@ -155,7 +155,11 @@ fun DocumentsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
 
     Box(Modifier.fillMaxSize().background(Lumi.Bg)) {
         Column(Modifier.fillMaxSize().imePadding()) {
-            ScreenHeader("Documentos", if (docs.isEmpty()) "" else countText(docs.size, "documento", "documentos")) {
+            // Al bajar por los documentos el título grande se encoge.
+            val docsGrid = androidx.compose.foundation.lazy.grid.rememberLazyGridState()
+            val docsScrolled by remember { androidx.compose.runtime.derivedStateOf { docsGrid.firstVisibleItemIndex > 0 || docsGrid.firstVisibleItemScrollOffset > 40 } }
+            val docsCollapse by androidx.compose.animation.core.animateFloatAsState(if (docsScrolled) 1f else 0f, androidx.compose.animation.core.tween(260), label = "titulo")
+            ScreenHeader("Documentos", if (docs.isEmpty()) "" else countText(docs.size, "documento", "documentos"), collapse = docsCollapse) {
                 Box {
                     BarIcon(Icons.Filled.Add, "Añadir", { menu = true })
                     AddMenu(vm, menu) { menu = false }
@@ -198,6 +202,7 @@ fun DocumentsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                 } else {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(scaledColumns(2)),
+                        state = docsGrid,
                         contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 130.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalArrangement = Arrangement.spacedBy(14.dp),

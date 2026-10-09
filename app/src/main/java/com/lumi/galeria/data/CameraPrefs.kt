@@ -55,6 +55,9 @@ class CameraPrefs(context: Context) {
         private set
     var doubleTapFlip by mutableStateOf(p.getBoolean("dobleToqueGira", false))
         private set
+    /** La línea del nivel en el centro del visor. */
+    var level by mutableStateOf(p.getBoolean("nivel", false))
+        private set
 
     fun setRemember(on: Boolean) { rememberSettings = on; p.edit().putBoolean("recordar", on).apply() }
     fun chooseSize(v: PhotoSize) { size = v; p.edit().putString("tamano", v.name).apply() }
@@ -65,6 +68,13 @@ class CameraPrefs(context: Context) {
     fun chooseVolume(v: VolumeKeys) { volume = v; p.edit().putString("volumen", v.name).apply() }
     fun chooseSwipeFlip(on: Boolean) { swipeFlip = on; p.edit().putBoolean("deslizarGira", on).apply() }
     fun chooseDoubleTapFlip(on: Boolean) { doubleTapFlip = on; p.edit().putBoolean("dobleToqueGira", on).apply() }
+    /** Al disparar: láminas de diafragma (true) o destello blanco. */
+    var iris by mutableStateOf(p.getBoolean("diafragma", true))
+        private set
+
+    fun chooseIris(on: Boolean) { iris = on; p.edit().putBoolean("diafragma", on).apply() }
+
+    fun chooseLevel(on: Boolean) { level = on; p.edit().putBoolean("nivel", on).apply() }
     fun chooseGuide(name: String) { guide = name; p.edit().putString("guias", name).apply() }
 
     /** Lo que se recuerda de una vez para otra, si así se quiere: modo, flash, formato y temporizador. */

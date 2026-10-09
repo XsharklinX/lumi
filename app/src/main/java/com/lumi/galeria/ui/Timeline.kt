@@ -195,6 +195,8 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
     }
     val atTop by remember { derivedStateOf { grid.firstVisibleItemIndex == 0 && grid.firstVisibleItemScrollOffset < 60 } }
     val barShown = barWanted || atTop || pick != null
+    // El título grande se encoge en cuanto se baja un poco.
+    val titleCollapse by animateFloatAsState(if (atTop) 0f else 1f, tween(260), label = "titulo")
     val barHidden by animateFloatAsState(if (barShown) 0f else 1f, tween(220), label = "cabecera")
     // Con la cabecera retirada, una etiqueta dice por dónde se va; se apaga sola al parar.
     val moving = grid.isScrollInProgress
@@ -206,7 +208,8 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
 
     Box(Modifier.fillMaxSize().background(Lumi.Bg)) {
         when {
-            state.loading -> Unit
+            // Mientras se lee la galería: huecos con un brillo que pasa.
+            state.loading -> SkeletonGrid(scaledColumns(4), Modifier.fillMaxSize().padding(start = 2.dp, end = 2.dp, top = top + barHeight))
             cells.isEmpty() -> if (state.filter == TileFilter.ALL) {
                 EmptyMessage("Aún no hay fotos", "Las fotos y los vídeos de tu teléfono aparecerán aquí.", icon = PictureIcon)
             } else {
@@ -364,7 +367,7 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                         pick.multiple -> "Elige fotos"
                         else -> "Elige una foto"
                     },
-                    style = TitleStyle, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    style = TitleStyle.copy(fontSize = (30 - 8 * titleCollapse).sp), maxLines = 1, overflow = TextOverflow.Ellipsis,
                     // El título grande es el del grupo que se está viendo: tocarlo lo marca entero.
                     modifier = Modifier.weight(1f).clickable(enabled = pick == null || pick.multiple) {
                         header?.let { toggleGroup(cells.indexOf(it)) }
