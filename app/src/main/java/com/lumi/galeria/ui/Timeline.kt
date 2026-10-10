@@ -265,8 +265,12 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                     contentType = { _, cell -> cell::class },
                 ) { index, cell ->
                     when (cell) {
-                        is Cell.Recall -> if (pick == null && stories.isNotEmpty()) {
-                            StoryRow(stories) { vm.open(Screen.StoryView(it.title, it.ids, it.open)) }
+                        is Cell.Recall -> if (pick == null) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TipOfDayCard(vm, actions, Modifier.padding(horizontal = 10.dp))
+                                MonthStoryCard(state, vm, Modifier.padding(horizontal = 10.dp))
+                                if (stories.isNotEmpty()) StoryRow(stories) { vm.open(Screen.StoryView(it.title, it.ids, it.open)) }
+                            }
                         }
                         // El primer grupo ya se lee en el título grande de arriba.
                         is Cell.Header -> if (index > firstHeader) {
@@ -444,7 +448,7 @@ fun TimelineScreen(state: UiState, vm: LumiViewModel, actions: Actions, grid: La
                     modifier = Modifier.clip(CircleShape).background(Lumi.Surface).padding(horizontal = 18.dp, vertical = 12.dp),
                 )
                 selection.isEmpty() -> if (!LocalWide.current) Dock(Screen.Timeline, vm::switchTab, onCamera = actions.camera, onScan = scanDocument)
-                else -> SelectionBar(state.tiles.filter { it.id in selection }, state, vm, actions) { selection = emptySet() }
+                else -> SelectionBar(state.tiles.filter { it.id in selection }, state, vm, actions, pool = state.tiles, onSelect = { selection = it }) { selection = emptySet() }
             }
         }
     }

@@ -26,6 +26,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -95,6 +97,8 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
     var folderFor by remember { mutableStateOf<Album?>(null) }
     var pressedFolder by remember { mutableStateOf<Long?>(null) }
     var renamingFolder by remember { mutableStateOf<com.lumi.galeria.AlbumFolder?>(null) }
+    var smartMenu by remember { mutableStateOf<Long?>(null) }
+    var renamingSmart by remember { mutableStateOf<com.lumi.galeria.data.SmartAlbum?>(null) }
 
     /** Poner o quitar el candado siempre pasa por la contraseña. */
     fun toggleLock(bucketId: Long, locked: Boolean) {
@@ -224,6 +228,38 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                 if (state.people.isNotEmpty() || (state.facesOn && state.facesLooked < state.facesTotal)) {
                     item(key = "personas", span = { GridItemSpan(maxLineSpan) }) { PeopleRow(state, vm) }
                 }
+                if (state.smartAlbums.isNotEmpty()) {
+                    item(key = "inteligentes", span = { GridItemSpan(maxLineSpan) }) {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            SectionTitle("✦ Álbumes inteligentes")
+                            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                state.smartAlbums.forEach { smart ->
+                                    val found = remember(smart, state.items, state.index, state.notes, state.places, state.people) { state.itemsFor(Source.Smart(smart.id)) }
+                                    val cover = found.firstOrNull()
+                                    Box {
+                                        if (cover != null) {
+                                            LumiAlbumCard(smart.name, formatCount(found.size) + if (found.size == 1) " foto" else " fotos", cover, onLongClick = { smartMenu = smart.id }) {
+                                                vm.open(Screen.Items(smart.name, Source.Smart(smart.id)))
+                                            }
+                                        } else {
+                                            Column(
+                                                Modifier.width(132.dp).height(150.dp).clip(RoundedCornerShape(18.dp)).background(Lumi.Surface).clickable { smartMenu = smart.id }.padding(12.dp),
+                                                verticalArrangement = Arrangement.Center,
+                                            ) {
+                                                Text(smart.name, style = HeadingStyle.copy(fontSize = 14.sp))
+                                                Text("Aún sin fotos", style = SmallStyle)
+                                            }
+                                        }
+                                        DropdownMenu(smartMenu == smart.id, { smartMenu = null }, containerColor = Lumi.Surface) {
+                                            DropdownMenuItem({ Text("Cambiar el nombre") }, { smartMenu = null; renamingSmart = smart })
+                                            DropdownMenuItem({ Text("Quitar este álbum") }, { smartMenu = null; vm.deleteSmartAlbum(smart.id) })
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 val reviewYear = defaultReviewYear(state.items)
                 if (trips.isNotEmpty() || things.isNotEmpty() || reviewYear != null || state.items.any { it.isScreenshot }) {
                     item(key = "lumi", span = { GridItemSpan(maxLineSpan) }) {
@@ -290,6 +326,12 @@ fun AlbumsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
     }
 
     folderFor?.let { album -> FolderPickerSheet(vm, album) { folderFor = null } }
+    renamingSmart?.let { smart ->
+        FolderNameDialog("Cambiar el nombre", smart.name, onDismiss = { renamingSmart = null }) { name ->
+            renamingSmart = null
+            vm.renameSmartAlbum(smart.id, name)
+        }
+    }
     renamingFolder?.let { folder ->
         FolderNameDialog("Cambiar el nombre", folder.name, onDismiss = { renamingFolder = null }) { name ->
             renamingFolder = null
@@ -749,7 +791,7 @@ internal fun ItemsScreen(
             ) {
                 val chosen = items.filter { it.id in selection }
                 selectionExtra?.invoke(chosen) { selection = emptySet() }
-                SelectionBar(chosen, state, vm, actions) { selection = emptySet() }
+                SelectionBar(chosen, state, vm, actions, pool = items, onSelect = { selection = it }) { selection = emptySet() }
             }
         }
     }

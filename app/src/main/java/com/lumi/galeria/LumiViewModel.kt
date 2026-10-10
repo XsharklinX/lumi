@@ -118,6 +118,9 @@ sealed interface Source {
     data class Ids(val ids: Set<Long>) : Source
     data class Search(val query: String) : Source
 
+    /** Un álbum inteligente: su búsqueda se vuelve a hacer cada vez. */
+    data class Smart(val id: Long) : Source
+
     /** Una carpeta que el sistema oculta a las galerías. */
     data class Hidden(val path: String) : Source
 
@@ -144,6 +147,9 @@ sealed interface Screen {
     data object Trash : Screen
     data object Vault : Screen
     data object Backup : Screen
+
+    /** Cuánto ocupa Lumi, qué ha mirado y herramientas para cuando algo se ve raro. */
+    data object Status : Screen
     data object Settings : Screen
     data class Album(val bucketId: Long) : Screen
 
@@ -233,6 +239,21 @@ sealed interface Screen {
 
     /** Fotos con datos personales que conviene pasar a la carpeta privada. */
     data object Sensitive : Screen
+
+    /** Fotos con la fecha equivocada o sin ella. */
+    data object Dates : Screen
+
+    /** Todo lo que sabe hacer Lumi, para descubrirlo. */
+    data object Discover : Screen
+
+    /** El resumen de un mes como historia. */
+    data class MonthStory(val year: Int, val month: Int) : Screen
+
+    /** El paquete de pegatinas para WhatsApp. */
+    data object Stickers : Screen
+
+    /** Crear una pegatina a partir de una foto. */
+    data class StickerMaker(val id: Long) : Screen
 
     /** Dejar el móvil a alguien para que vea solo [ids]. */
     data class Show(val ids: List<Long>) : Screen
@@ -391,7 +412,17 @@ data class UiState(
     val pip: Boolean = false,
     /** Lo que devolvió la última búsqueda, en su orden; es lo que recorre el visor al abrir un resultado. */
     val searchResults: List<MediaItem> = emptyList(),
+    /** Lo que el usuario escribió de cada foto: una nota y etiquetas. */
+    val notes: Map<Long, com.lumi.galeria.data.Note> = emptyMap(),
+    /** Búsquedas guardadas como álbum, que se llenan solas. */
+    val smartAlbums: List<com.lumi.galeria.data.SmartAlbum> = emptyList(),
+    /** Fotos marcadas para borrarse solas: foto -> cuándo (milisegundos). */
+    val temporary: Map<Long, Long> = emptyMap(),
+    /** Funciones de Lumi que el usuario ya ha probado o descubierto. */
+    val discovered: Set<String> = emptySet(),
     val recentSearches: List<String> = emptyList(),
+    /** Búsquedas que el usuario fijó como atajo, arriba del buscador. */
+    val pinnedSearches: List<com.lumi.galeria.data.SmartAlbum> = emptyList(),
     val level: Level = Level.MONTH,
     /** Columnas de la vista de día; se cambian pellizcando. */
     val dayColumns: Int = 3,
@@ -445,6 +476,9 @@ data class UiState(
         }
         is Source.Ids -> sortItems(items.filter { it.id in source.ids }, itemSort)
         is Source.Search -> searchResults
+        is Source.Smart -> smartAlbums.firstOrNull { it.id == source.id }?.let { a ->
+            sortItems(com.lumi.galeria.data.find(a.query, a.filters, items, index, favorites, places, namesByPhoto, notes).results, itemSort)
+        }.orEmpty()
         is Source.Hidden -> hiddenFolders?.firstOrNull { it.path == source.path }?.items.orEmpty()
         is Source.External -> {
             // Si el archivo está en la biblioteca se abre dentro de ella, para poder pasar a las demás fotos.
@@ -483,8 +517,14 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
     /** La carpeta privada abierta ahora: la de verdad o la del PIN señuelo. */
     private val vault get() = if (_state.value.vaultDecoy) LumiApp.decoy else LumiApp.vault
 
+    private val notesStore = com.lumi.galeria.data.NotesStore(app)
+
     private val _state = MutableStateFlow(
         UiState(
+            notes = notesStore.load(),
+            smartAlbums = com.lumi.galeria.data.smartAlbumsFromJson(prefs.getString(KEY_SMART, null)),
+            temporary = readTemporary(),
+            discovered = prefs.getStringSet(KEY_DISCOVERED, emptySet()).orEmpty().toSet(),
             favorites = readIds(KEY_FAVORITES),
             theme = runCatching { ThemeMode.valueOf(prefs.getString(KEY_THEME, null) ?: "SYSTEM") }.getOrDefault(ThemeMode.SYSTEM),
             lockMethod = if (prefs.getString(KEY_PIN_HASH, null) != null && prefs.getBoolean(KEY_USE_PIN, false)) LockMethod.PIN else LockMethod.SYSTEM,
@@ -500,6 +540,7 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
             albumView = runCatching { AlbumView.valueOf(prefs.getString(KEY_ALBUM_VIEW, null) ?: "LIST") }.getOrDefault(AlbumView.LIST),
             language = runCatching { AppLanguage.valueOf(prefs.getString(KEY_LANGUAGE, null) ?: "SYSTEM") }.getOrDefault(AppLanguage.SYSTEM),
             recentSearches = prefs.getString(KEY_RECENT, "").orEmpty().split('\n').filter { it.isNotBlank() },
+            pinnedSearches = com.lumi.galeria.data.smartAlbumsFromJson(prefs.getString(KEY_PINNED, null)),
             useTrash = prefs.getBoolean(KEY_USE_TRASH, true),
             dayColumns = prefs.getInt(KEY_DAY_COLUMNS, 3).coerceIn(DayColumns),
             appLock = prefs.getBoolean(KEY_APP_LOCK, false),
@@ -1216,19 +1257,50 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
         done?.invoke()
     }
 
+    /** Compara dos huellas sin que el tiempo que tarda delate cuántos caracteres coinciden. */
+    private fun sameHash(a: String, b: String?): Boolean = b != null && java.security.MessageDigest.isEqual(a.toByteArray(), b.toByteArray())
+
+    /** Cuánto hay que esperar tras fallar el PIN tantas veces seguidas. Se guarda, así que cerrar la app no lo salta. */
+    private fun pinWaitMs(fails: Int): Long = when {
+        fails < 5 -> 0L
+        fails == 5 -> 30_000L
+        fails == 6 -> 60_000L
+        fails == 7 -> 300_000L
+        else -> 900_000L
+    }
+
+    private fun waitText(ms: Long): String = if (ms >= 60_000L) "${(ms + 59_999L) / 60_000L} min" else "${(ms + 999L) / 1000L} s"
+
     fun pinEntered(pin: String) {
         when (_state.value.pinStep) {
             PinStep.ASK -> {
+                val wait = prefs.getLong(KEY_PIN_LOCKED_UNTIL, 0L) - System.currentTimeMillis()
+                if (wait > 0L) {
+                    _state.update { it.copy(pinError = "Espera ${waitText(wait)} para volver a probar") }
+                    return
+                }
                 val salt = android.util.Base64.decode(prefs.getString(KEY_PIN_SALT, "") ?: "", android.util.Base64.NO_WRAP)
                 val decoy = afterDecoy
                 when {
-                    hash(pin, salt) == prefs.getString(KEY_PIN_HASH, null) -> pinBypassed()
+                    sameHash(hash(pin, salt), prefs.getString(KEY_PIN_HASH, null)) -> {
+                        prefs.edit().putInt(KEY_PIN_FAILS, 0).putLong(KEY_PIN_LOCKED_UNTIL, 0L).apply()
+                        pinBypassed()
+                    }
                     // El señuelo solo abre la carpeta privada; en cualquier otro sitio es un PIN equivocado.
                     decoy != null && isDecoy(pin) -> {
+                        prefs.edit().putInt(KEY_PIN_FAILS, 0).putLong(KEY_PIN_LOCKED_UNTIL, 0L).apply()
                         cancelPin()
                         decoy()
                     }
-                    else -> _state.update { it.copy(pinError = "Ese no es el PIN") }
+                    else -> {
+                        // Tras cinco fallos seguidos, esperas cada vez más largas: probar todas las combinaciones a mano no sale a cuenta.
+                        val fails = prefs.getInt(KEY_PIN_FAILS, 0) + 1
+                        val pause = pinWaitMs(fails)
+                        prefs.edit().putInt(KEY_PIN_FAILS, fails).putLong(KEY_PIN_LOCKED_UNTIL, if (pause > 0) System.currentTimeMillis() + pause else 0L).apply()
+                        _state.update {
+                            it.copy(pinError = if (pause > 0) "Demasiados intentos. Prueba otra vez dentro de ${waitText(pause)}" else "Ese no es el PIN")
+                        }
+                    }
                 }
             }
             PinStep.DECOY_CREATE -> {
@@ -2041,7 +2113,7 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
         val found = withContext(Dispatchers.Default) {
             val people = HashMap<Long, MutableList<String>>()
             now.people.forEach { person -> person.name?.let { name -> person.photos.forEach { people.getOrPut(it) { ArrayList() } += name } } }
-            find(query, filters, now.items, now.index, now.favorites, now.places, people)
+            find(query, filters, now.items, now.index, now.favorites, now.places, people, now.notes)
         }
         _state.update { it.copy(searchResults = found.results) }
         return found
@@ -2070,6 +2142,36 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
         val next = (listOf(clean) + _state.value.recentSearches.filter { !it.equals(clean, ignoreCase = true) }).take(8)
         prefs.edit().putString(KEY_RECENT, next.joinToString("\n")).apply()
         _state.update { it.copy(recentSearches = next) }
+    }
+
+    private fun savePinned(next: List<com.lumi.galeria.data.SmartAlbum>) {
+        _state.update { it.copy(pinnedSearches = next) }
+        prefs.edit().putString(KEY_PINNED, com.lumi.galeria.data.smartAlbumsToJson(next)).apply()
+    }
+
+    /** Deja la búsqueda de ahora como un atajo fijo, con un nombre corto. */
+    fun pinSearch(query: String, filters: Filters) {
+        val name = com.lumi.galeria.data.suggestAlbumName(query, filters).take(24)
+        val before = _state.value.pinnedSearches
+        if (before.any { it.query == query.trim() && it.filters == filters }) { say("Ya está fijada"); return }
+        discover("busquedas_fijadas")
+        savePinned((before + com.lumi.galeria.data.SmartAlbum(System.currentTimeMillis(), name, query.trim(), filters)).takeLast(12))
+        offerAction("Búsqueda fijada arriba") { savePinned(before) }
+    }
+
+    fun unpinSearch(id: Long) {
+        val before = _state.value.pinnedSearches
+        savePinned(before.filter { it.id != id })
+        offerAction("Atajo quitado") { savePinned(before) }
+    }
+
+    /** Borra lo analizado y lo vuelve a leer. */
+    fun reindex() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { indexer.reset() }
+            say("Analizando las fotos de nuevo, poco a poco")
+            reload()
+        }
     }
 
     fun clearSearches() {
@@ -2163,6 +2265,188 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
         highContrast = on
         prefs.edit().putBoolean(KEY_CONTRAST, on).apply()
     }
+
+    // --- Notas y etiquetas ---
+
+    private fun saveNotes(next: Map<Long, com.lumi.galeria.data.Note>) {
+        _state.update { it.copy(notes = next) }
+        viewModelScope.launch(Dispatchers.IO) { notesStore.save(next) }
+        discover("notas_etiquetas")
+    }
+
+    /** Pone la nota y las etiquetas de una foto; vacías, las quita. */
+    fun editNote(id: Long, text: String, tags: List<String>) {
+        val before = _state.value.notes
+        val clean = tags.map { com.lumi.galeria.data.cleanTag(it) }.filter { it.isNotEmpty() }.distinct()
+        saveNotes(_state.value.notes.toMutableMap().also { map ->
+            val note = com.lumi.galeria.data.Note(text.trim(), clean)
+            if (note.isEmpty) map.remove(id) else map[id] = note
+        })
+        offerAction("Nota guardada") { saveNotes(before) }
+    }
+
+    /** Añade etiquetas a varias fotos a la vez, sin tocar sus notas. */
+    fun addTagsTo(ids: Collection<Long>, tags: List<String>) {
+        val clean = tags.map { com.lumi.galeria.data.cleanTag(it) }.filter { it.isNotEmpty() }.distinct()
+        if (clean.isEmpty()) return
+        val before = _state.value.notes
+        saveNotes(_state.value.notes.toMutableMap().also { map ->
+            ids.forEach { id ->
+                val old = map[id]
+                map[id] = com.lumi.galeria.data.Note(old?.text.orEmpty(), ((old?.tags.orEmpty()) + clean).distinct())
+            }
+        })
+        offerAction(countText(ids.size, "foto etiquetada", "fotos etiquetadas")) { saveNotes(before) }
+    }
+
+    // --- Álbumes inteligentes ---
+
+    private fun saveSmart(next: List<com.lumi.galeria.data.SmartAlbum>) {
+        _state.update { it.copy(smartAlbums = next) }
+        prefs.edit().putString(KEY_SMART, com.lumi.galeria.data.smartAlbumsToJson(next)).apply()
+    }
+
+    fun saveSmartAlbum(name: String, query: String, filters: Filters) {
+        val before = _state.value.smartAlbums
+        saveSmart(_state.value.smartAlbums + com.lumi.galeria.data.SmartAlbum(System.currentTimeMillis(), name.trim().take(40), query.trim(), filters))
+        discover("album_inteligente")
+        offerAction("Álbum inteligente «${name.trim()}» guardado") { saveSmart(before) }
+    }
+
+    fun renameSmartAlbum(id: Long, name: String) =
+        saveSmart(_state.value.smartAlbums.map { if (it.id == id) it.copy(name = name.trim().take(40)) else it })
+
+    fun deleteSmartAlbum(id: Long) {
+        val before = _state.value.smartAlbums
+        saveSmart(before.filter { it.id != id })
+        offerAction("Álbum inteligente quitado") { saveSmart(before) }
+    }
+
+    // --- Fechas ---
+
+    /** Pone a cada foto la fecha que le toca. Hay que haber pedido ya el permiso de escritura. */
+    fun fixDates(changes: List<Pair<MediaItem, Long>>) {
+        if (changes.isEmpty()) return
+        viewModelScope.launch {
+            making = 0
+            val context = getApplication<Application>()
+            var done = 0
+            withContext(Dispatchers.IO) {
+                changes.forEachIndexed { i, (item, taken) ->
+                    if (com.lumi.galeria.data.setTakenDate(context, item, taken)) done++
+                    making = (i + 1) * 100 / changes.size
+                }
+            }
+            making = null
+            discover("corregir_fechas")
+            offerAction(countText(done, "foto con su fecha arreglada", "fotos con su fecha arreglada")) {
+                changes.forEach { (item, _) -> com.lumi.galeria.data.setTakenDate(context, item, item.date) }
+            }
+            reload()
+        }
+    }
+
+    // --- Fotos temporales ---
+
+    private fun readTemporary(): Map<Long, Long> = prefs.getString(KEY_TEMP, "").orEmpty().split(',').mapNotNull { pair ->
+        val (id, at) = pair.split(':').mapNotNull { it.toLongOrNull() }.takeIf { it.size == 2 } ?: return@mapNotNull null
+        id to at
+    }.toMap()
+
+    private fun saveTemporary(next: Map<Long, Long>) {
+        _state.update { it.copy(temporary = next) }
+        prefs.edit().putString(KEY_TEMP, next.entries.joinToString(",") { "${it.key}:${it.value}" }).apply()
+    }
+
+    /** Marca fotos para que pasen a la papelera dentro de [days] días. */
+    fun markTemporary(ids: Collection<Long>, days: Int) {
+        val at = System.currentTimeMillis() + days * 86_400_000L
+        val before = _state.value.temporary
+        saveTemporary(_state.value.temporary + ids.associateWith { at })
+        discover("fotos_temporales")
+        offerAction(if (days == 1) "Se mandará a la papelera dentro de un día" else "Se mandará a la papelera dentro de $days días") { saveTemporary(before) }
+    }
+
+    fun clearTemporary(ids: Collection<Long>) = saveTemporary(_state.value.temporary - ids.toSet())
+
+    /** Fotos temporales cuyo plazo ya pasó y que el usuario tiene que confirmar (sin la gestión multimedia, Android pregunta). */
+    var expiredAsk by mutableStateOf<List<MediaItem>>(emptyList())
+
+    /** Mira si hay fotos temporales caducadas: con la gestión multimedia las manda a la papelera sin preguntar; si no, pregunta. */
+    fun checkTemporary() {
+        val now = System.currentTimeMillis()
+        val due = _state.value.temporary.filterValues { it <= now }.keys
+        if (due.isEmpty()) return
+        val items = _state.value.items.filter { it.id in due }
+        if (items.isEmpty()) {
+            // Ya no están (las borró el usuario): se olvidan.
+            clearTemporary(due)
+            return
+        }
+        val context = getApplication<Application>()
+        if (android.os.Build.VERSION.SDK_INT >= 31 && android.provider.MediaStore.canManageMedia(context)) {
+            viewModelScope.launch {
+                val n = withContext(Dispatchers.IO) { com.lumi.galeria.data.trashSilently(context, items) }
+                clearTemporary(due)
+                if (n > 0) say(countText(n, "foto temporal a la papelera", "fotos temporales a la papelera"))
+                reload()
+            }
+        } else if (expiredAsk.isEmpty()) {
+            expiredAsk = items
+        }
+    }
+
+    /** Deja de preguntar por las caducadas: [days] días más, o para siempre si es 0. */
+    fun postponeTemporary(ids: Collection<Long>, days: Int) {
+        expiredAsk = emptyList()
+        if (days <= 0) clearTemporary(ids) else markTemporary(ids, days)
+    }
+
+    // --- Descubrir lo que sabe hacer Lumi ---
+
+    /** Anota que el usuario ya conoce esta función. */
+    fun discover(id: String) {
+        if (id in _state.value.discovered) return
+        val next = _state.value.discovered + id
+        _state.update { it.copy(discovered = next) }
+        prefs.edit().putStringSet(KEY_DISCOVERED, next).apply()
+    }
+
+    /** El consejo de hoy: una función que aún no se ha descubierto, la misma durante todo el día. */
+    fun tipOfDay(): com.lumi.galeria.data.Feature? {
+        val today = java.time.LocalDate.now().toEpochDay()
+        if (prefs.getLong(KEY_TIP_DAY, -1L) == today) return null
+        val pool = com.lumi.galeria.data.FEATURES.filter { it.id !in _state.value.discovered && it.id != "recorrido" }
+        if (pool.isEmpty()) return null
+        return pool[(today % pool.size).toInt()]
+    }
+
+    /** Hoy no se vuelve a enseñar el consejo. */
+    fun dismissTip() {
+        prefs.edit().putLong(KEY_TIP_DAY, java.time.LocalDate.now().toEpochDay()).apply()
+        tipTick++
+    }
+
+    /** Cambia cuando se descarta el consejo, para que la tarjeta se entere. */
+    var tipTick by mutableIntStateOf(0)
+        private set
+
+    /** Los globos de «primera vez» que ya se enseñaron. */
+    fun coachSeen(id: String): Boolean = prefs.getStringSet(KEY_COACH, emptySet()).orEmpty().contains(id)
+
+    fun markCoach(id: String) {
+        prefs.edit().putStringSet(KEY_COACH, prefs.getStringSet(KEY_COACH, emptySet()).orEmpty() + id).apply()
+        coachTick++
+    }
+
+    fun resetCoach() {
+        prefs.edit().remove(KEY_COACH).remove(KEY_TIP_DAY).apply()
+        coachTick++
+        tipTick++
+    }
+
+    var coachTick by mutableIntStateOf(0)
+        private set
 
     // --- Carpetas de álbumes (solo en Lumi: las fotos no se mueven) ---
 
@@ -2326,12 +2610,12 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
     var videoExport by mutableStateOf<Int?>(null)
         private set
 
-    fun exportVideo(item: MediaItem, edit: com.lumi.galeria.data.VideoEdit) {
+    fun exportProject(project: com.lumi.galeria.data.VideoProject) {
         if (videoExport != null) return
         viewModelScope.launch {
             videoExport = 0
             val ok = runCatching {
-                com.lumi.galeria.data.exportVideo(getApplication(), item, edit) { videoExport = it }
+                com.lumi.galeria.data.exportProject(getApplication(), project) { videoExport = it }
             }.getOrDefault(false)
             videoExport = null
             say(if (ok) "Vídeo nuevo guardado junto al original" else "Este vídeo no se pudo editar")
@@ -2377,6 +2661,39 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Pega unos ajustes copiados en el editor a varias fotos: guarda una copia de cada una, sin tocar la original. */
+    fun pasteAdjustments(items: List<MediaItem>, values: String) {
+        if (making != null) return
+        val photos = items.filter { !it.isVideo && !it.isExternal }
+        if (photos.isEmpty()) { say("Elige fotos para pegarles los ajustes"); return }
+        val look = runCatching { org.json.JSONObject(values) }.getOrNull() ?: return
+        viewModelScope.launch {
+            making = 0
+            val context = getApplication<Application>()
+            var done = 0
+            val created = ArrayList<android.net.Uri>()
+            withContext(Dispatchers.IO) {
+                photos.forEachIndexed { i, item ->
+                    val source = com.lumi.galeria.ui.decodeEditable(context, item.uri)
+                    if (source != null) {
+                        val result = runCatching { com.lumi.galeria.ui.renderWithLook(source, look) }.getOrNull()
+                        val uri = result?.let { com.lumi.galeria.data.saveEditedAs(context, item, it) }
+                        if (uri != null) { done++; created += uri }
+                    }
+                    making = (i + 1) * 100 / photos.size
+                }
+            }
+            making = null
+            discover("copiar_ajustes")
+            if (done == 0) say("No se pudo guardar ninguna copia")
+            else offerAction(countText(done, "copia guardada con esos ajustes", "copias guardadas con esos ajustes")) {
+                // Las copias las creó Lumi: se pueden borrar sin pedir permiso.
+                created.forEach { runCatching { context.contentResolver.delete(it, null, null) } }
+            }
+            reload()
+        }
+    }
+
     /** Bytes recién liberados, para celebrarlo; null si no hay nada que celebrar. */
     var celebration by mutableStateOf<Long?>(null)
 
@@ -2387,6 +2704,19 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
     /** Agitar el móvil justo después de borrar o mover algo pregunta si deshacerlo. */
     var shakeUndo by mutableStateOf(prefs.getBoolean("shakeUndo", true))
         private set
+
+    /** Lo que se está a punto de enviar: abre la hoja de «Enviar». */
+    var shareRequest by mutableStateOf<List<MediaItem>>(emptyList())
+
+    /** Vibraciones suaves al tocar, elegir, soltar y borrar. */
+    var hapticsOn by mutableStateOf(prefs.getBoolean("haptics", true).also { com.lumi.galeria.ui.Haptics.enabled = it })
+        private set
+
+    fun chooseHaptics(on: Boolean) {
+        hapticsOn = on
+        com.lumi.galeria.ui.Haptics.enabled = on
+        prefs.edit().putBoolean("haptics", on).apply()
+    }
 
     fun chooseShakeUndo(on: Boolean) {
         shakeUndo = on
@@ -2531,6 +2861,11 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_FACES = "faces"
         const val KEY_CAMERA = "cameraChoice"
         // Con cada actualización grande cambia, para que el recorrido salga una vez con lo nuevo.
+        const val KEY_SMART = "smartAlbums"
+        const val KEY_TEMP = "temporary"
+        const val KEY_DISCOVERED = "discovered"
+        const val KEY_TIP_DAY = "tipDay"
+        const val KEY_COACH = "coachSeen"
         const val KEY_TOUR = "tourSeen_1.1"
         const val KEY_RECENTS = "recentsHide"
         const val KEY_LUMI_AUTO = "lumiAuto"
@@ -2556,7 +2891,10 @@ class LumiViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_ALBUM_SORT = "albumSort"
         const val KEY_OLDEST_FIRST = "oldestFirst"
         const val KEY_USE_TRASH = "useTrash"
+        const val KEY_PIN_FAILS = "pinFails"
+        const val KEY_PIN_LOCKED_UNTIL = "pinLockedUntil"
         const val KEY_RECENT = "recentSearches"
+        const val KEY_PINNED = "pinnedSearches"
         const val KEY_DAY_COLUMNS = "dayColumns"
         const val KEY_ACCENT = "accent"
         const val KEY_BLACK = "pureBlack"

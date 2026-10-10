@@ -59,6 +59,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.material.icons.filled.Close
@@ -184,6 +185,7 @@ import com.lumi.galeria.Thumb
 import com.lumi.galeria.UiState
 import com.lumi.galeria.countText
 import com.lumi.galeria.data.MediaItem
+import com.lumi.galeria.data.rawTwin
 import com.lumi.galeria.data.WORDS
 import com.lumi.galeria.data.cameraInfo
 import com.lumi.galeria.data.nearestCity
@@ -296,6 +298,9 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
     var naming by remember { mutableStateOf<com.lumi.galeria.data.Face?>(null) }
     // Códigos leídos de la foto con «Leer el código QR».
     var qrCodes by remember { mutableStateOf<List<com.google.mlkit.vision.barcode.common.Barcode>>(emptyList()) }
+    var noteDialog by remember { mutableStateOf(false) }
+    var dateDialog by remember { mutableStateOf(false) }
+    var tempDialog by remember { mutableStateOf(false) }
     // Cara mantenida pulsada en «En esta foto»: se puede decir que no es esa persona.
     var faceMenu by remember { mutableStateOf<Pair<com.lumi.galeria.data.Face, com.lumi.galeria.data.Person?>?>(null) }
     val photoFaces by produceState(emptyList<Pair<com.lumi.galeria.data.Face, com.lumi.galeria.data.Person?>>(), current.id, state.people) {
@@ -322,6 +327,8 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
     // --- Abrir desde la miniatura, cerrar hacia ella y arrastrar hacia abajo ---
     val open = remember { Animatable(0f) }
     val dragY = remember { Animatable(0f) }
+    // La foto que se borra vuela hacia la esquina de la papelera.
+    val trashFly = remember { Animatable(0f) }
     var closing by remember { mutableStateOf(false) }
     var tile by remember { mutableStateOf(screen.origin) }
     var box by remember { mutableStateOf(IntSize.Zero) }
@@ -549,17 +556,17 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                             // Con la información abierta, bajar la cierra en vez de cerrar la foto.
                             info && dragY.value > 0f -> {
                                 info = false
-                                scope.launch { dragY.animateTo(0f) }
+                                scope.launch { dragY.animateTo(0f, ViewerSpring) }
                             }
                             dragY.value > size.height * 0.14f -> close()
                             lifted > size.height * 0.09f && dragY.value == 0f -> {
                                 info = true
-                                scope.launch { dragY.animateTo(0f) }
+                                scope.launch { dragY.animateTo(0f, ViewerSpring) }
                             }
-                            else -> scope.launch { dragY.animateTo(0f) }
+                            else -> scope.launch { dragY.animateTo(0f, ViewerSpring) }
                         }
                     },
-                    onDragCancel = { scope.launch { dragY.animateTo(0f) } },
+                    onDragCancel = { scope.launch { dragY.animateTo(0f, ViewerSpring) } },
                 ) { change, amount ->
                     change.consume()
                     lifted -= amount
@@ -582,6 +589,7 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
             key = { items.getOrNull(it)?.id ?: it },
             beyondViewportPageCount = 1,
             pageSpacing = 16.dp,
+            flingBehavior = androidx.compose.foundation.pager.PagerDefaults.flingBehavior(pager, snapAnimationSpec = ViewerSpring),
             userScrollEnabled = textPage == null,
             modifier = Modifier.graphicsLayer {
                 val p = open.value
@@ -605,6 +613,14 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                     scaleY = scale
                     translationY = dragY.value - infoShift * box.height * 0.3f
                     alpha = p
+                }
+                val fly = trashFly.value
+                if (fly > 0f) {
+                    translationX += fly * box.width * 0.32f
+                    translationY += fly * box.height * 0.42f
+                    scaleX *= 1f - 0.85f * fly
+                    scaleY *= 1f - 0.85f * fly
+                    alpha *= 1f - fly
                 }
             },
         ) { page ->
@@ -636,7 +652,7 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                     onAdjust = ::adjust,
                     fast = active && holdFast,
                     onHold = {
-                        if (it && !holdFast) view.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK)
+                        if (it && !holdFast) Haptics.perform(view, android.view.HapticFeedbackConstants.CONTEXT_CLICK)
                         holdFast = it
                     },
                 )
@@ -703,8 +719,8 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
         }
         AnimatedVisibility(
             info && settled,
-            enter = slideInVertically { it } + fadeIn(),
-            exit = slideOutVertically { it } + fadeOut(),
+            enter = slideInVertically(spring(dampingRatio = 0.8f, stiffness = 380f)) { it } + fadeIn(),
+            exit = slideOutVertically(spring(dampingRatio = 0.8f, stiffness = 380f)) { it } + fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
             // Las demás fotos de ese mismo día, de las que se están viendo.
@@ -746,6 +762,22 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                     vm.open(Screen.Search)
                 },
                 onClose = { info = false },
+                extras = {
+                    InfoExtras(
+                        item = current, state = state,
+                        onNote = { noteDialog = true },
+                        onDate = { dateDialog = true },
+                        onTemporary = { tempDialog = true },
+                        onClearTemporary = { vm.clearTemporary(listOf(current.id)) },
+                        onTag = { tag ->
+                            vm.searchQuery = tag
+                            vm.searchFilters = Filters()
+                            vm.open(Screen.Search)
+                        },
+                        onTwin = { rawTwin(current, items)?.let { twin -> leaveTo(Screen.Compare(current.id, twin.id)) } },
+                        onShown = { vm.discover("datos_pro") },
+                    )
+                },
             )
         }
         AnimatedVisibility(chrome && settled && !info && !state.pip && !slideshow && !touchLock, enter = fadeIn(), exit = fadeOut()) {
@@ -960,7 +992,15 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                             } else {
                                 ToolButton(Icons.Filled.Edit, "Editar", Modifier.weight(1f)) { leaveTo(Screen.Editor(current.id)) }
                             }
-                            ToolButton(Icons.Filled.Delete, "Borrar", Modifier.weight(1f)) { actions.trash(listOf(current)) {} }
+                            ToolButton(Icons.Filled.Delete, "Borrar", Modifier.weight(1f)) {
+                                scope.launch {
+                                    trashFly.animateTo(1f, tween(240, easing = FastOutSlowInEasing))
+                                    actions.trash(listOf(current)) {}
+                                    // Si Android pide confirmar y se cancela, la foto vuelve con un muelle.
+                                    kotlinx.coroutines.delay(500)
+                                    trashFly.animateTo(0f, spring(dampingRatio = 0.7f, stiffness = 300f))
+                                }
+                            }
                         }
                     }
                 }
@@ -1137,7 +1177,28 @@ fun ViewerScreen(screen: Screen.Viewer, state: UiState, vm: LumiViewModel, actio
                 player.pause()
                 shrinking = current
             },
+            onNote = { more = false; noteDialog = true },
+            onTemporary = { more = false; tempDialog = true },
+            onSticker = { more = false; leaveTo(Screen.StickerMaker(current.id)) },
+            onTwin = rawTwin(current, items)?.let { twin -> { more = false; leaveTo(Screen.Compare(current.id, twin.id)) } },
         )
+    }
+    if (noteDialog) {
+        val usedTags = remember(state.notes) { state.notes.values.flatMap { it.tags }.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.map { it.key } }
+        NoteDialog(
+            note = state.notes[current.id], usedTags = usedTags,
+            onSave = { text, tags -> vm.editNote(current.id, text, tags); noteDialog = false },
+            onDismiss = { noteDialog = false },
+        )
+    }
+    if (dateDialog) {
+        DatePickDialog(current.date, onPick = { taken ->
+            dateDialog = false
+            actions.write(listOf(current)) { vm.fixDates(listOf(current to taken)) }
+        }, onDismiss = { dateDialog = false })
+    }
+    if (tempDialog) {
+        TemporaryDialog(1, onPick = { days -> tempDialog = false; vm.markTemporary(listOf(current.id), days) }, onDismiss = { tempDialog = false })
     }
     shrinking?.let { video -> ShrinkSheet(video, vm) { shrinking = null } }
     if (motionOpen && isMotion) {
@@ -1585,6 +1646,9 @@ private fun Backdrop(item: MediaItem) {
     Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.55f)))
 }
 
+/** El mismo muelle para pasar de foto, cerrar y abrir la información: así todo el visor se mueve igual. */
+val ViewerSpring = spring<Float>(dampingRatio = 0.8f, stiffness = 380f)
+
 @Composable
 private fun ZoomablePhoto(item: MediaItem, active: Boolean, onTap: () -> Unit, onHold: ((Boolean) -> Unit)? = null, locked: Boolean = false) {
     var scale by remember { mutableFloatStateOf(1f) }
@@ -1597,6 +1661,9 @@ private fun ZoomablePhoto(item: MediaItem, active: Boolean, onTap: () -> Unit, o
     var size by remember { mutableStateOf(IntSize.Zero) }
     val tap by rememberUpdatedState(onTap)
     val hold by rememberUpdatedState(onHold)
+    // La lupa: si mantener el dedo no hace otra cosa, enseña la foto ampliada bajo el dedo.
+    var loupe by remember { mutableStateOf<Offset?>(null) }
+    val loupeOn = onHold == null && !item.isGif && !item.isExternal
 
     fun clamp(value: Offset, forScale: Float): Offset {
         val maxX = size.width * (forScale - 1) / 2
@@ -1643,6 +1710,25 @@ private fun ZoomablePhoto(item: MediaItem, active: Boolean, onTap: () -> Unit, o
                     },
                 )
             }
+            .pointerInput(loupeOn) {
+                if (!loupeOn) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val press = awaitLongPressOrCancellation(down.id) ?: return@awaitEachGesture
+                    if (scale != 1f) return@awaitEachGesture
+                    loupe = press.position
+                    try {
+                        while (true) {
+                            val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == press.id } ?: break
+                            change.consume()
+                            if (!change.pressed) break
+                            loupe = change.position
+                        }
+                    } finally {
+                        loupe = null
+                    }
+                }
+            }
             .pointerInput(Unit) {
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
@@ -1684,6 +1770,46 @@ private fun ZoomablePhoto(item: MediaItem, active: Boolean, onTap: () -> Unit, o
             )
         }
         hdr?.let { Image(it.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit, filterQuality = androidx.compose.ui.graphics.FilterQuality.High) }
+        loupe?.let { at -> Loupe(item, at, size) }
+    }
+}
+
+/** Un círculo que amplía tres veces lo que hay bajo el dedo, un poco por encima para verlo. */
+@Composable
+private fun Loupe(item: MediaItem, at: Offset, area: IntSize) {
+    if (area.width == 0 || area.height == 0) return
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val diameter = with(density) { 150.dp.toPx() }
+    val zoom = 3f
+    // Por encima del dedo; si no cabe arriba, a un lado.
+    val topLeft = Offset(
+        (at.x - diameter / 2).coerceIn(0f, (area.width - diameter).coerceAtLeast(0f)),
+        (at.y - diameter * 1.35f).let { if (it < 0f) at.y + diameter * 0.35f else it },
+    )
+    Box(
+        Modifier
+            .offset { androidx.compose.ui.unit.IntOffset(topLeft.x.toInt(), topLeft.y.toInt()) }
+            .size(with(density) { diameter.toDp() })
+            .clip(CircleShape)
+            .border(2.dp, Color.White, CircleShape)
+            .background(Color.Black),
+    ) {
+        Box(
+            Modifier
+                .requiredSize(with(density) { area.width.toDp() }, with(density) { area.height.toDp() })
+                .graphicsLayer {
+                    transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0f)
+                    scaleX = zoom
+                    scaleY = zoom
+                    translationX = diameter / 2 - zoom * at.x
+                    translationY = diameter / 2 - zoom * at.y
+                },
+        ) {
+            AsyncImage(
+                ImageRequest.Builder(LocalContext.current).data(item.uri).size(3072).memoryCacheKey("lupa:${item.uri}").build(),
+                null, Modifier.fillMaxSize(), contentScale = ContentScale.Fit,
+            )
+        }
     }
 }
 
@@ -1829,6 +1955,10 @@ private fun MoreSheet(
     onShrink: () -> Unit,
     onScan: () -> Unit,
     onCopyImage: () -> Unit,
+    onNote: () -> Unit,
+    onTemporary: () -> Unit,
+    onSticker: () -> Unit,
+    onTwin: (() -> Unit)?,
 ) {
     // Lo más usado, en botones redondos; según sea foto o vídeo.
     val quick: List<Triple<ImageVector, String, () -> Unit>> = if (item.isVideo) listOf(
@@ -1857,13 +1987,17 @@ private fun MoreSheet(
             add(Triple(PersonIcon, "Modo retrato: desenfocar el fondo", onPortrait))
             add(Triple(ScanIcon, "Leer el código QR", onQr))
             add(Triple(PenIcon, "Firmar", onSign))
+            add(Triple(PersonIcon, "Crear pegatina para WhatsApp", onSticker))
+            if (onTwin != null) add(Triple(PictureIcon, if (item.format == "DNG") "Comparar con su JPEG" else "Comparar con su RAW", onTwin))
             add(Triple(InfoIcon, "Información", onInfo))
             add(Triple(PenIcon, "Cambiar el nombre", onRename))
             add(Triple(LandscapeIcon, if (landscape) "Volver a vertical" else "Ver en horizontal", onScreen))
             add(Triple(ScanIcon, "Escanear documento", onScan))
             add(Triple(SlidesIcon, "Presentación", onSlideshow))
         }
+        add(Triple(PenIcon, "Nota y etiquetas", onNote))
         add(Triple(AlbumIcon, "Copiar a un álbum", onCopy))
+        add(Triple(Icons.Filled.Delete, "Borrar sola dentro de unos días…", onTemporary))
         add(Triple(CoverIcon, "Usar como portada del álbum", onCover))
         if (!item.isVideo) {
             add(Triple(NoPlaceIcon, "Enviar sin ubicación", onShareClean))
@@ -1950,6 +2084,7 @@ private fun InfoPanel(
     onPlace: (String) -> Unit,
     onThing: (String) -> Unit,
     onClose: () -> Unit,
+    extras: @Composable () -> Unit = {},
 ) {
     val context = LocalContext.current
     // Lo que anotó la cámara se lee al abrir el panel, no antes.
@@ -1987,6 +2122,7 @@ private fun InfoPanel(
             }
             if (item.isVideo) InfoChip(formatDuration(item.duration))
         }
+        extras()
         if (sameDay.size > 1) {
             Text(countText(sameDay.size, "foto ese día", "fotos ese día"), style = LabelStyle)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {

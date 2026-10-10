@@ -20,8 +20,8 @@ android {
         // Android 11: la papelera del sistema (createTrashRequest) existe desde aquí.
         minSdk = 30
         targetSdk = 36
-        versionCode = 1200
-        versionName = "1.2.0"
+        versionCode = 1300
+        versionName = "1.3.0"
         // Los modelos de reconocimiento traen código nativo por arquitectura. En Google Play cada
         // teléfono descarga solo la suya; x86_64 es para el emulador.
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
@@ -92,7 +92,7 @@ dependencies {
     // Pantalla de arranque con el logo animado, igual en todas las versiones de Android.
     implementation("androidx.core:core-splashscreen:1.0.1")
     // Cambiar el fondo y avisar de recuerdos a su hora, sin nada abierto en segundo plano.
-    implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("androidx.work:work-runtime-ktx:2.10.5")
     // Guardar las fotos de la cámara en HEIC con el codificador del propio teléfono.
     implementation("androidx.heifwriter:heifwriter:1.0.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
@@ -101,7 +101,7 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     // Para que los GIF y las imágenes animadas se muevan.
     implementation("io.coil-kt:coil-gif:2.7.0")
-    implementation("androidx.exifinterface:exifinterface:1.3.7")
+    implementation("androidx.exifinterface:exifinterface:1.4.2")
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
     // Volver a comprimir vídeos para que ocupen menos.
@@ -117,7 +117,7 @@ dependencies {
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
     implementation("com.google.android.gms:play-services-mlkit-image-labeling:16.0.8")
     // Escáner de documentos: encuentra la hoja, la endereza y la limpia. Lo instala Google Play.
-    implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0-beta1")
+    implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0")
     implementation("com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1")
     // Personas: encontrar las caras (ML Kit) y sacar la huella de cada una con un modelo pequeño
     // (assets/caras.tflite). El motor que lo ejecuta lo pone Google Play, no va dentro de la app.
@@ -125,12 +125,12 @@ dependencies {
     implementation("com.google.android.gms:play-services-tflite-java:16.4.0")
     // Cámara Lumi: CameraX (vista previa, fotos, vídeo, modos del móvil) y el puente con ML Kit para
     // leer QR y texto en vivo. El lector de códigos lo descarga Google Play, como los demás.
-    implementation("androidx.camera:camera-core:1.4.1")
-    implementation("androidx.camera:camera-camera2:1.4.1")
-    implementation("androidx.camera:camera-lifecycle:1.4.1")
-    implementation("androidx.camera:camera-view:1.4.1")
-    implementation("androidx.camera:camera-video:1.4.1")
-    implementation("androidx.camera:camera-extensions:1.4.1")
-    implementation("androidx.camera:camera-mlkit-vision:1.4.1")
+    implementation("androidx.camera:camera-core:1.4.2")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
+    implementation("androidx.camera:camera-video:1.4.2")
+    implementation("androidx.camera:camera-extensions:1.4.2")
+    implementation("androidx.camera:camera-mlkit-vision:1.4.2")
     implementation("com.google.android.gms:play-services-mlkit-barcode-scanning:18.3.1")
 }

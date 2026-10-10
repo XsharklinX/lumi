@@ -199,9 +199,10 @@ fun AlbumStrip(name: String, subtitle: String, recent: List<MediaItem>, locked: 
 
 /** Álbum que arma Lumi (viajes, cosas), en la fila que se desliza de lado. */
 @Composable
-fun LumiAlbumCard(title: String, subtitle: String, cover: MediaItem, onClick: () -> Unit) {
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+fun LumiAlbumCard(title: String, subtitle: String, cover: MediaItem, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     val press = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-    Column(Modifier.width(132.dp).pressScale(press).clip(RoundedCornerShape(18.dp)).clickable(press, androidx.compose.material3.ripple(), onClick = onClick), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(Modifier.width(132.dp).pressScale(press).clip(RoundedCornerShape(18.dp)).combinedClickable(press, androidx.compose.material3.ripple(), onLongClick = onLongClick, onClick = onClick), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         MediaThumb(cover, 320, Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(18.dp)))
         Column(Modifier.padding(horizontal = 4.dp)) {
             Text(title, style = HeadingStyle.copy(fontSize = 14.sp), maxLines = 1, overflow = TextOverflow.Ellipsis)

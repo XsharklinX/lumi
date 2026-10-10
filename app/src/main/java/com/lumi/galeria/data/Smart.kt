@@ -130,6 +130,7 @@ fun search(
     index: Map<Long, IndexEntry>,
     favorites: Set<Long>,
     people: Map<Long, List<String>> = emptyMap(),
+    notes: Map<Long, Note> = emptyMap(),
 ): List<MediaItem> {
     var plain = " " + normalize(query).replace(NOT_WORD, " ").trim() + " "
     if (plain.isBlank()) return emptyList()
@@ -169,6 +170,8 @@ fun search(
             albumNames.getOrPut(item.bucketId) { normalize(albumName(item.bucket) + " " + item.path) }.let { where ->
                 where.contains(token) || (token.length >= 5 && token.endsWith("s") && where.contains(token.dropLast(1)))
             } ||
+            // Lo que escribió el usuario: su nota y sus etiquetas.
+            notes[item.id]?.let { n -> normalize(n.text).contains(token) || n.tags.any { normalize(it).contains(token) } } == true ||
             // Quien sale en la foto, por su nombre.
             people[item.id]?.any { normalize(it).split(' ').any { part -> part == token || (token.length >= 4 && part.startsWith(token)) } } == true ||
             // El móvil o la cámara: «pixel», «canon», «iphone».
@@ -456,8 +459,9 @@ fun find(
     places: Map<Long, String>,
     /** Foto -> nombres de las personas que salen en ella. */
     people: Map<Long, List<String>> = emptyMap(),
+    notes: Map<Long, Note> = emptyMap(),
 ): Found {
-    val base = if (query.isBlank()) items else search(query, items, index, favorites, people)
+    val base = if (query.isBlank()) items else search(query, items, index, favorites, people, notes)
     // Sin nada escrito ni elegido no hay resultados que enseñar, pero sí opciones que ofrecer.
     val idle = query.isBlank() && filters.isEmpty
 

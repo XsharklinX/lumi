@@ -97,7 +97,7 @@ fun Celebration(bytes: Long, onDone: () -> Unit) {
     val fall = remember { Animatable(0f) }
     val view = LocalView.current
     LaunchedEffect(bytes) {
-        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+        Haptics.perform(view, HapticFeedbackConstants.CONFIRM)
         if (!still) fall.animateTo(1f, tween(2600, easing = LinearEasing))
         delay(if (still) 2200 else 200)
         onDone()
@@ -166,13 +166,13 @@ fun AlbumDragHandle(photos: List<MediaItem>, albums: List<Album>, onDrop: (Album
                         val session = AlbumDrag(photos, albums, onDrop)
                         session.at = origin + offset
                         AlbumDragState.session = session
-                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                        Haptics.perform(view, HapticFeedbackConstants.LONG_PRESS)
                     },
                     onDragEnd = {
                         val session = AlbumDragState.session
                         AlbumDragState.session = null
                         session?.over?.let { album ->
-                            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                            Haptics.perform(view, HapticFeedbackConstants.CONFIRM)
                             session.onDrop(album)
                         }
                     },
@@ -184,7 +184,7 @@ fun AlbumDragHandle(photos: List<MediaItem>, albums: List<Album>, onDrop: (Album
                     val over = session.albums.firstOrNull { session.places[it.bucketId]?.contains(session.at) == true }
                     if (over != session.over) {
                         session.over = over
-                        if (over != null) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                        if (over != null) Haptics.perform(view, HapticFeedbackConstants.CLOCK_TICK)
                     }
                 }
             }
@@ -263,13 +263,13 @@ fun DetentDial(labels: List<String>, index: Int, onIndex: (Int) -> Unit, modifie
                     change.consume()
                     drag += dx
                     while (drag <= -stepPx) {
-                        if (at < labels.lastIndex) { at++; onIndex(at); view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK) }
-                        else view.performHapticFeedback(HapticFeedbackConstants.REJECT)
+                        if (at < labels.lastIndex) { at++; onIndex(at); Haptics.perform(view, HapticFeedbackConstants.CLOCK_TICK) }
+                        else Haptics.perform(view, HapticFeedbackConstants.REJECT)
                         drag += stepPx
                     }
                     while (drag >= stepPx) {
-                        if (at > 0) { at--; onIndex(at); view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK) }
-                        else view.performHapticFeedback(HapticFeedbackConstants.REJECT)
+                        if (at > 0) { at--; onIndex(at); Haptics.perform(view, HapticFeedbackConstants.CLOCK_TICK) }
+                        else Haptics.perform(view, HapticFeedbackConstants.REJECT)
                         drag -= stepPx
                     }
                 }

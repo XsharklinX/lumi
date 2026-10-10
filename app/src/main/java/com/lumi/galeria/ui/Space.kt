@@ -104,6 +104,10 @@ fun SpaceScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                 if (dark.isNotEmpty()) SpaceRow("Se pueden mejorar", dark, "Lumi Auto") { vm.open(Screen.Enhance) }
                 val sensitive = remember(state.items, state.sensitive) { state.items.filter { it.id in state.sensitive } }
                 if (sensitive.isNotEmpty()) SpaceRow("Fotos con datos personales", sensitive, "Proteger") { vm.open(Screen.Sensitive) }
+                val badDates = remember(state.items) {
+                    (com.lumi.galeria.data.findDateFixes(state.items).map { it.item } + state.items.filter { it.noDate && !it.isVideo }).distinctBy { it.id }
+                }
+                if (badDates.isNotEmpty()) SpaceRow("Fechas por revisar", badDates, "Arreglar") { vm.open(Screen.Dates) }
                 SpaceRow("Repaso rápido", state.items.filter { it.isScreenshot }.take(3), "Deslizar") { vm.open(Screen.SwipeReview) }
                 SpaceRow(
                     "Papelera",

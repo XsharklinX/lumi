@@ -146,12 +146,13 @@ private class VaultThumbFetcher(private val thumb: VaultThumb, private val optio
 class LumiApp : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
+        com.lumi.galeria.data.CrashLog.install(this)
         vault = Vault(this)
         decoy = Vault(this, "vault_decoy")
         Geo.load(this)
         // Si la app se cerró con algo abierto de la carpeta privada, no debe quedar copia sin cifrar.
-        vault.clearOpened()
-        decoy.clearOpened()
+        // Fuera del hilo principal: borrar archivos no debe retrasar el arranque.
+        Thread { vault.clearOpened(); decoy.clearOpened() }.apply { priority = Thread.MIN_PRIORITY }.start()
     }
 
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)

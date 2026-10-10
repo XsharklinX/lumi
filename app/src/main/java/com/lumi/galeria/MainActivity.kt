@@ -136,7 +136,11 @@ class MainActivity : FragmentActivity() {
             LumiTheme(state.theme, state.accent, state.pureBlack, vm.textScale, vm.highContrast) {
                 Box {
                     com.lumi.galeria.ui.LocalStateHolder.state = state
-                    androidx.compose.runtime.CompositionLocalProvider(com.lumi.galeria.ui.LocalState provides state) { LumiRoot(vm, state) }
+                    val lumiHaptics = com.lumi.galeria.ui.rememberLumiHaptics()
+                    androidx.compose.runtime.CompositionLocalProvider(
+                        com.lumi.galeria.ui.LocalState provides state,
+                        androidx.compose.ui.platform.LocalHapticFeedback provides lumiHaptics,
+                    ) { LumiRoot(vm, state) }
                     // En la vista de apps recientes, Lumi en blanco: siempre o con lo privado abierto.
                     val privateOpen = vm.backStack.any { it == Screen.Vault || it is Screen.Show } || state.albumsUnlocked
                     val hide = vm.recentsHide == RecentsHide.ALWAYS || (vm.recentsHide == RecentsHide.PRIVATE && privateOpen)
@@ -284,7 +288,13 @@ class MainActivity : FragmentActivity() {
     /** Otra app puede pedir que se abra un archivo o que el usuario elija uno. */
     private fun handle(intent: Intent) {
         when (intent.action) {
-            Intent.ACTION_VIEW -> intent.data?.let { uri ->
+            Intent.ACTION_VIEW -> intent.data?.takeIf { uri ->
+                // Un archivo de la propia carpeta privada de Lumi (índices, carpeta cifrada, ajustes) no se abre aunque otra app lo pida.
+                uri.scheme != "file" || runCatching {
+                    val path = java.io.File(uri.path.orEmpty()).canonicalPath
+                    listOf(filesDir, cacheDir, dataDir).none { path.startsWith(it.canonicalPath) }
+                }.getOrDefault(false)
+            }?.let { uri ->
                 val type = intent.type ?: runCatching { contentResolver.getType(uri) }.getOrNull().orEmpty()
                 vm.openExternal(uri, type.startsWith("video"))
             }
@@ -427,7 +437,11 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
             // Vaciar la papelera libera espacio de verdad: se celebra. (Pasar a la tarjeta o a la carpeta privada, no.)
             deleteForever = { items -> ask(items, { if (items.all { it.expires > 0 }) vm.celebrate(items.sumOf { it.size }) }) { deleteRequest(context, it) } },
             write = { items, onGranted -> ask(items, onGranted) { writeRequest(context, it) } },
-            share = { items -> share(context, items.map { it.uri }, items.all { it.isVideo }, items.none { it.isVideo }) },
+            share = { items ->
+                // Lo que llega de fuera de la biblioteca se envía directo; lo demás pasa por la hoja de «Enviar».
+                if (items.any { it.isExternal }) share(context, items.map { it.uri }, items.all { it.isVideo }, items.none { it.isVideo })
+                else vm.shareRequest = items
+            },
             shareUris = { uris -> share(context, uris, false, true) },
             shareWithoutLocation = { item ->
                 val clean = copyWithoutLocation(context, item)
@@ -557,6 +571,8 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
                         val depth = vm.backStack.count { it !is Screen.Viewer }
                         // Al cambiar de pestaña, la barra de abajo vuelve a verse.
                         LaunchedEffect(base) { com.lumi.galeria.ui.DockState.hidden = false }
+                        // Al entrar en una pantalla, sus miniaturas aparecen en cascada.
+                        remember(base) { com.lumi.galeria.ui.Cascade.start = System.currentTimeMillis() }
                         val screenSize = with(androidx.compose.ui.platform.LocalDensity.current) { androidx.compose.ui.geometry.Size(rootWidth.toPx(), rootHeight.toPx()) }
                         AnimatedContent(
                             targetState = Shown(base, depth),
@@ -600,6 +616,7 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
                                     Screen.Trash -> TrashScreen(state, vm, actions)
                                     Screen.Vault -> VaultScreen(state, vm)
                                     Screen.Backup -> BackupScreen(state, vm)
+                                    Screen.Status -> com.lumi.galeria.ui.StatusScreen(state, vm)
                                     Screen.Settings -> SettingsScreen(state, vm, actions)
                                     is Screen.Album -> AlbumScreen(shown, state, vm, actions, link)
                                     is Screen.NewAlbum -> NewAlbumScreen(shown, state, vm, actions)
@@ -631,6 +648,11 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
                                     Screen.Tour -> com.lumi.galeria.ui.TourScreen(state, vm)
                                     Screen.Enhance -> com.lumi.galeria.ui.EnhanceScreen(state, vm)
                                     Screen.Sensitive -> com.lumi.galeria.ui.SensitiveScreen(state, vm, actions)
+                                    Screen.Dates -> com.lumi.galeria.ui.DatesScreen(state, vm, actions)
+                                    Screen.Discover -> com.lumi.galeria.ui.DiscoverScreen(state, vm, actions)
+                                    is Screen.MonthStory -> com.lumi.galeria.ui.MonthStoryScreen(shown, state, vm, actions)
+                                    Screen.Stickers -> com.lumi.galeria.ui.StickersScreen(state, vm, actions)
+                                    is Screen.StickerMaker -> com.lumi.galeria.ui.StickerMakerScreen(shown, state, vm, actions)
                                     is Screen.Show -> com.lumi.galeria.ui.ShowScreen(shown, state, vm, actions)
                                     Screen.AutoWallpaper -> com.lumi.galeria.ui.AutoWallpaperScreen(state, vm)
                                     Screen.CameraSettings -> com.lumi.galeria.ui.CameraSettingsScreen(vm)
@@ -656,12 +678,56 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
             }
         }
         if (viewer != null) ViewerScreen(viewer, state, vm, actions, link)
+        if (state.hasPermission && vm.tourSeen && !state.loading) {
+            com.lumi.galeria.ui.CoachOverlay(
+                vm, base, viewer != null,
+                Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = if (viewer != null) 96.dp else 92.dp),
+            )
+        }
 
         if (vm.askCamera) CameraChooser(vm)
 
         // La primera vez que se entra con acceso a las fotos, el recorrido de todo lo que hace Lumi.
         LaunchedEffect(state.hasPermission, state.loading) {
             if (state.hasPermission && !state.loading && !vm.tourSeen && vm.backStack.none { it == Screen.Tour }) vm.open(Screen.Tour)
+        }
+
+        // Fotos temporales: al abrir Lumi se mira si alguna ya llegó a su fecha.
+        LaunchedEffect(state.hasPermission, state.loading, state.items.size) {
+            if (state.hasPermission && !state.loading) vm.checkTemporary()
+        }
+        // Si la última vez Lumi se cerró por un fallo, se ofrece enviar el informe (siempre lo decide el usuario).
+        if (state.hasPermission && !state.loading) com.lumi.galeria.ui.CrashReportDialog()
+        if (vm.shareRequest.isNotEmpty()) {
+            LaunchedEffect(Unit) { vm.discover("compartir_rapido") }
+            com.lumi.galeria.ui.ShareSheet(vm.shareRequest) { vm.shareRequest = emptyList() }
+        }
+        if (vm.expiredAsk.isNotEmpty()) {
+            val due = vm.expiredAsk
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { vm.postponeTemporary(due.map { it.id }, 1) },
+                containerColor = Lumi.Surface,
+                title = { Text(if (due.size == 1) "Una foto temporal ha caducado" else "${due.size} fotos temporales han caducado", style = HeadingStyle) },
+                text = {
+                    Text(
+                        if (due.size == 1) "Marcaste esta foto para que se borrara sola. Va a la papelera, donde sigue 30 días. Nada se borra sin tu permiso."
+                        else "Marcaste estas fotos para que se borraran solas. Van a la papelera, donde siguen 30 días. Nada se borra sin tu permiso.",
+                        style = SmallStyle.copy(fontSize = 15.sp, color = Lumi.Ink),
+                    )
+                },
+                confirmButton = {
+                    Text("A la papelera", style = LabelStyle, color = Lumi.Danger, modifier = Modifier.clip(CircleShape).clickable {
+                        vm.expiredAsk = emptyList()
+                        actions.trash(due) { vm.clearTemporary(due.map { it.id }) }
+                    }.padding(12.dp))
+                },
+                dismissButton = {
+                    Row {
+                        Text("Un día más", style = LabelStyle, color = Lumi.Muted, modifier = Modifier.clip(CircleShape).clickable { vm.postponeTemporary(due.map { it.id }, 1) }.padding(12.dp))
+                        Text("Conservar", style = LabelStyle, color = Lumi.Accent, modifier = Modifier.clip(CircleShape).clickable { vm.postponeTemporary(due.map { it.id }, 0) }.padding(12.dp))
+                    }
+                },
+            )
         }
 
         if (vm.offerManageMedia) {
@@ -733,49 +799,22 @@ private fun LumiRoot(vm: LumiViewModel, state: UiState) {
             )
         }
 
+        // El aviso de «Deshacer», con una cuenta atrás circular. Al borrar, además, vibra distinto.
+        val view = androidx.compose.ui.platform.LocalView.current
+        LaunchedEffect(state.undo) { if (state.undo.isNotEmpty()) com.lumi.galeria.ui.Haptics.perform(view, com.lumi.galeria.ui.Haptics.DELETE) }
         if (state.undo.isNotEmpty() && !state.pip) {
-            Row(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(bottom = 136.dp)
-                    .clip(CircleShape)
-                    .background(Lumi.Ink)
-                    .padding(start = 18.dp, end = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(countText(state.undo.size, "enviada a la papelera", "enviadas a la papelera"), style = LabelStyle, color = Lumi.Bg)
-                Text(
-                    "Deshacer",
-                    style = LabelStyle,
-                    color = Lumi.Accent,
-                    modifier = Modifier.clip(CircleShape).clickable {
-                        actions.restore(state.undo)
-                        vm.clearUndo()
-                    }.padding(horizontal = 14.dp, vertical = 12.dp),
-                )
-            }
+            com.lumi.galeria.ui.UndoPill(
+                text = countText(state.undo.size, "enviada a la papelera", "enviadas a la papelera"),
+                key = state.undo,
+                onUndo = { actions.restore(state.undo); vm.clearUndo() },
+                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 136.dp),
+            )
         }
-
         vm.undoText?.takeIf { state.undo.isEmpty() && !state.pip }?.let { text ->
-            Row(
-                Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(bottom = 136.dp)
-                    .clip(CircleShape)
-                    .background(Lumi.Ink)
-                    .padding(start = 18.dp, end = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(text, style = LabelStyle, color = Lumi.Bg)
-                Text(
-                    "Deshacer",
-                    style = LabelStyle,
-                    color = Lumi.Accent,
-                    modifier = Modifier.clip(CircleShape).clickable { vm.runUndo() }.padding(horizontal = 14.dp, vertical = 12.dp),
-                )
-            }
+            com.lumi.galeria.ui.UndoPill(
+                text = text, key = text, onUndo = { vm.runUndo() },
+                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 136.dp),
+            )
         }
 
         // Arrastrando fotos a un álbum: la bandeja y las fotos bajo el dedo, por encima de todo.

@@ -109,7 +109,7 @@ fun LumiArt(icon: ImageVector, colors: ArtColors, modifier: Modifier = Modifier)
     Box(
         modifier.pointerInput(Unit) {
             detectTapGestures {
-                view.performHapticFeedback(android.view.HapticFeedbackConstants.CONTEXT_CLICK)
+                Haptics.perform(view, android.view.HapticFeedbackConstants.CONTEXT_CLICK)
                 scope.launch {
                     hop.snapTo(0f)
                     hop.animateTo(1f, androidx.compose.animation.core.tween(160))

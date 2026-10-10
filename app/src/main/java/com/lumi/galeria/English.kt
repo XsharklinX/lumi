@@ -40,7 +40,8 @@ fun tr(text: String): String {
 
 private fun translate(text: String): String {
     EN[text]?.let { return it }
-    for ((pattern, build) in PATTERNS) {
+    EN_MORE[text]?.let { return it }
+    for ((pattern, build) in PATTERNS + PATTERNS_MORE) {
         val match = pattern.matchEntire(text) ?: continue
         return build(match.groupValues)
     }

@@ -60,7 +60,7 @@ private enum class Edge(val label: String, val low: Float, val high: Float) {
 }
 
 /** La foto y, para cada píxel, la seguridad de que es parte de lo principal (de 0 a 1). */
-private class Segmented(val photo: Bitmap, val confidence: FloatArray)
+internal class Segmented(val photo: Bitmap, val confidence: FloatArray)
 
 /**
  * Quitar el fondo. El reconocedor dice, píxel a píxel, cuánto cree que algo es parte de lo
@@ -233,7 +233,7 @@ private fun compose(source: Segmented, behind: Behind, edge: Edge, trim: Boolean
 }
 
 /** Separa lo principal del fondo. Tarda un poco: se hace fuera del hilo de la pantalla. */
-private suspend fun segment(context: android.content.Context, item: com.lumi.galeria.data.MediaItem): Result<Segmented> = withContext(Dispatchers.IO) {
+internal suspend fun segment(context: android.content.Context, item: com.lumi.galeria.data.MediaItem): Result<Segmented> = withContext(Dispatchers.IO) {
     runCatching {
         val photo = ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, item.uri)) { decoder, info, _ ->
             decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
@@ -253,7 +253,7 @@ private suspend fun segment(context: android.content.Context, item: com.lumi.gal
 }
 
 /** Por qué no se pudo separar: el recortador no viene dentro de Lumi, lo baja Google Play la primera vez. */
-private fun segmentProblem(result: Result<Segmented>): String =
+internal fun segmentProblem(result: Result<Segmented>): String =
     if (result.exceptionOrNull()?.message.orEmpty().contains("module", ignoreCase = true)) {
         "Google Play está descargando el recortador. Con conexión a internet tarda alrededor de un minuto; vuelve a intentarlo después."
     } else {

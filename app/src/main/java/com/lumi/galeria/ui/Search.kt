@@ -39,6 +39,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -78,6 +80,7 @@ import com.lumi.galeria.data.similarWords
  * Buscar es, sobre todo, tocar: los filtros de arriba se combinan y el resultado cambia al
  * momento. Escribir es opcional y sirve para nombres, álbumes y texto que aparece en las fotos.
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun SearchScreen(state: UiState, vm: LumiViewModel, link: GridLink) {
     val query = vm.searchQuery
@@ -91,7 +94,9 @@ fun SearchScreen(state: UiState, vm: LumiViewModel, link: GridLink) {
         value = vm.runSearch(query, filters)
     }
     val results = found.results
+    remember(query, filters) { Cascade.start = System.currentTimeMillis() }
     val idle = query.isBlank() && filters.isEmpty
+    var savingSmart by remember { mutableStateOf(false) }
 
     SideEffect {
         link.boundsOf = { id -> tileBounds(grid, container[0], id) }
@@ -129,6 +134,24 @@ fun SearchScreen(state: UiState, vm: LumiViewModel, link: GridLink) {
             )
         }
 
+        // Las búsquedas fijadas: un toque las repite. Mantener pulsada una la quita.
+        if (state.pinnedSearches.isNotEmpty()) {
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp).padding(bottom = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Fijadas", style = SmallStyle)
+                state.pinnedSearches.forEach { pin ->
+                    val on = pin.query == query.trim() && pin.filters == filters
+                    Text(
+                        "📌 " + pin.name, style = LabelStyle, color = if (on) Lumi.OnAccent else Lumi.Ink,
+                        modifier = Modifier.defaultMinSize(minHeight = 40.dp).clip(CircleShape).background(if (on) Lumi.Accent else Lumi.Surface)
+                            .combinedClickable(onLongClick = { vm.unpinSearch(pin.id) }) { focus.clearFocus(); vm.searchQuery = pin.query; vm.searchFilters = pin.filters }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                    )
+                }
+            }
+        }
         FilterBar(state, found, filters, ::set)
 
         // Mientras se escribe: lo que de verdad hay en las fotos, con cuántas son.
@@ -172,8 +195,18 @@ fun SearchScreen(state: UiState, vm: LumiViewModel, link: GridLink) {
                 countText(results.size, "resultado", "resultados") +
                     if (loose.isEmpty()) "" else ". Lumi no distingue «${loose.joinToString(", ")}»: te enseña lo más parecido que reconoce.",
                 style = SmallStyle,
-                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 8.dp),
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 4.dp),
             )
+            Row(Modifier.padding(start = 8.dp, bottom = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    "✦ Guardar como álbum inteligente", style = LabelStyle, color = Lumi.Accent,
+                    modifier = Modifier.defaultMinSize(minHeight = 40.dp).clip(CircleShape).clickable { savingSmart = true }.padding(horizontal = 10.dp, vertical = 10.dp),
+                )
+                Text(
+                    "📌 Fijar", style = LabelStyle, color = Lumi.Accent,
+                    modifier = Modifier.defaultMinSize(minHeight = 40.dp).clip(CircleShape).clickable { vm.pinSearch(query, filters) }.padding(horizontal = 10.dp, vertical = 10.dp),
+                )
+            }
             LazyVerticalGrid(
                 columns = GridCells.Fixed(scaledColumns(state.itemColumns)),
                 state = grid,
@@ -198,6 +231,13 @@ fun SearchScreen(state: UiState, vm: LumiViewModel, link: GridLink) {
                 }
             }
         }
+    }
+    if (savingSmart) {
+        FolderNameDialog(
+            "Álbum inteligente", com.lumi.galeria.data.suggestAlbumName(query, filters).take(30),
+            onDismiss = { savingSmart = false },
+            onDone = { name -> savingSmart = false; vm.saveSmartAlbum(name, query, filters) },
+        )
     }
 }
 

@@ -164,6 +164,10 @@ fun SettingsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
 
                 Group("Fotos y álbumes", words = "destacar estrella mejor foto dia orden recientes antiguas ocultos esconder carpetas sistema agitar deshacer") {
                     Item(
+                        Glyph.Icon(Icons.Filled.Star), "Vibraciones", "Un toque suave al elegir, un tic en las ruedas y un golpe distinto al soltar y al borrar.",
+                        words = "vibracion vibrar haptico tactil tic", toggle = vm.hapticsOn, onClick = { vm.chooseHaptics(!vm.hapticsOn) },
+                    )
+                    Item(
                         Glyph.Icon(Icons.Filled.Refresh), "Agitar para deshacer", "Justo después de borrar o mover algo, agita el móvil para deshacerlo.",
                         words = "agitar deshacer sacudir", toggle = vm.shakeUndo, onClick = { vm.chooseShakeUndo(!vm.shakeUndo) },
                     )
@@ -389,6 +393,18 @@ fun SettingsScreen(state: UiState, vm: LumiViewModel, actions: Actions) {
                 }
 
                 Group("Acerca de", words = "acerca version lumi gallery privacidad politica contacto correo internet funciones recorrido") {
+                    Item(
+                        Glyph.Icon(Icons.Filled.Search), "Descubre Lumi", "${state.discovered.size} de ${com.lumi.galeria.data.FEATURES.size} funciones descubiertas: búscalas y pruébalas",
+                        words = "descubrir funciones catalogo consejos probar", onClick = { vm.open(Screen.Discover) }, link = true,
+                    )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Info), "Estado de Lumi", "Cuánto ocupa, qué ha mirado, limpiar la caché y volver a analizar",
+                        words = "estado espacio cache ocupa analizar reindexar fallo informe error", onClick = { vm.open(Screen.Status) }, link = true,
+                    )
+                    Item(
+                        Glyph.Icon(Icons.Filled.Info), "Volver a ver los consejos", "Los «¿Sabías que…?» y los globos de ayuda de cada pantalla",
+                        words = "consejos ayuda globos sabias", onClick = { vm.resetCoach(); vm.say("Verás de nuevo los consejos") },
+                    )
                     Item(
                         Glyph.Icon(Icons.Filled.Info), "Todo lo que puede hacer Lumi", "El recorrido por sus funciones, otra vez",
                         words = "funciones recorrido ayuda novedades", onClick = { vm.open(Screen.Tour) }, link = true,

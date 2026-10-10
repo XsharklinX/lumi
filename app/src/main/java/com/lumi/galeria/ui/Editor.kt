@@ -49,6 +49,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -111,7 +112,7 @@ private enum class Aspect(val label: String, val ratio: Float?) {
 
 private enum class Grab { NONE, MOVE, TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT }
 
-private val FULL = Rect(0f, 0f, 1f, 1f)
+internal val FULL = Rect(0f, 0f, 1f, 1f)
 
 /** Ampliación mínima para que una imagen girada [degrees] siga cubriendo su marco de [w] x [h]. */
 private fun coverScale(degrees: Float, w: Float, h: Float): Float {
@@ -129,11 +130,13 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
+    // La foto tal como la abre el sistema; en un RAW, «bitmap» puede ser el revelado de más abajo.
+    var baseBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var failed by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
 
     LaunchedEffect(item.id) {
-        bitmap = withContext(Dispatchers.IO) {
+        baseBitmap = withContext(Dispatchers.IO) {
             runCatching {
                 ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, item.uri)) { decoder, info, _ ->
                     decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
@@ -145,6 +148,7 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                 }
             }.getOrNull()
         }
+        bitmap = baseBitmap
         failed = bitmap == null
     }
 
@@ -171,6 +175,18 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
     // A su izquierda se ve la foto original y a su derecha, con los cambios.
     var split by remember { mutableStateOf<Float?>(null) }
     var saveMenu by remember { mutableStateOf(false) }
+    // Retoque local: borrar, zonas, caras, marco y revelado RAW.
+    var retouch by remember { mutableStateOf(com.lumi.galeria.data.Retouch()) }
+    var zoneIndex by remember { mutableIntStateOf(0) }
+    var brush by remember { mutableFloatStateOf(0.03f) }
+    var faceShapes by remember { mutableStateOf<List<com.lumi.galeria.data.FaceShape>?>(null) }
+    var faceStatus by remember { mutableStateOf<String?>(null) }
+    var rawBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var rawHeadroom by remember { mutableStateOf<Boolean?>(null) }
+    var history by remember { mutableStateOf(emptyList<HistoryStep>()) }
+    var historyAt by remember { mutableIntStateOf(0) }
+    var historyOpen by remember { mutableStateOf(false) }
+    var started by remember { mutableStateOf(false) }
     val tone = remember(brightness, contrast, saturation, warmth, look, fade, hue, lookStrength) {
         toneMatrix(brightness, contrast, saturation, warmth, look, fade, hue, lookStrength)
     }
@@ -191,8 +207,18 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
     }
     // Curvas, tonos por gama, sombras y luces, nitidez, ruido y grano: se calculan píxel a píxel.
     var pro by remember { mutableStateOf(com.lumi.galeria.data.Develop()) }
-    val shaped by produceState<Bitmap?>(null, preview, keyV, keyH, pro) {
+    // Primero el retoque local (borrar, zonas, caras), sobre la foto sin girar ni recortar.
+    val worked by produceState<Bitmap?>(null, preview, retouch.erase, retouch.zones, retouch.faces, faceShapes) {
         val p = preview ?: return@produceState
+        kotlinx.coroutines.delay(60)
+        value = withContext(Dispatchers.Default) {
+            var q = com.lumi.galeria.data.applyErase(p, retouch.erase)
+            q = com.lumi.galeria.data.applyZones(q, retouch.zones)
+            com.lumi.galeria.data.applyFaces(q, faceShapes.orEmpty(), retouch.faces)
+        }
+    }
+    val shaped by produceState<Bitmap?>(null, worked, keyV, keyH, pro) {
+        val p = worked ?: return@produceState
         // Un respiro: mientras se arrastra un control no se recalcula cada milímetro.
         kotlinx.coroutines.delay(60)
         value = withContext(Dispatchers.Default) {
@@ -222,7 +248,8 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
         crop = Rect((1 - w) / 2, (1 - h) / 2, (1 + w) / 2, (1 + h) / 2)
     }
 
-    val changed = quarter != 0 || angle != 0f || crop != FULL || toned || flip || vignette != 0f || keyV != 0f || keyH != 0f || !pro.isIdentity
+    val changed = quarter != 0 || angle != 0f || crop != FULL || toned || flip || vignette != 0f || keyV != 0f || keyH != 0f || !pro.isIdentity ||
+        retouch != com.lumi.galeria.data.Retouch()
 
     /** Los ajustes de color de ahora, para guardarlos como filtro propio. */
     fun currentLook(): org.json.JSONObject = org.json.JSONObject().apply {
@@ -244,6 +271,108 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
         vignette = values.optDouble("vineta", 0.0).toFloat()
         pro = values.optJSONObject("pro")?.let { developFromJson(it) } ?: com.lumi.galeria.data.Develop()
     }
+
+    /** Todo lo que hay hecho ahora mismo, en texto: sirve para el historial y para retomar la edición. */
+    fun snapshot(): String = currentLook().apply {
+        put(
+            "geo",
+            org.json.JSONObject().put("q", quarter).put("a", angle.toDouble()).put("l", crop.left.toDouble()).put("t", crop.top.toDouble())
+                .put("r", crop.right.toDouble()).put("b", crop.bottom.toDouble()).put("asp", aspect.name).put("flip", flip)
+                .put("kv", keyV.toDouble()).put("kh", keyH.toDouble()),
+        )
+        put("retoque", com.lumi.galeria.data.retouchToJson(retouch))
+    }.toString()
+
+    fun restore(json: String) {
+        val o = runCatching { org.json.JSONObject(json) }.getOrNull() ?: return
+        applyLook(o)
+        val g = o.optJSONObject("geo")
+        quarter = g?.optInt("q", 0) ?: 0
+        angle = g?.optDouble("a", 0.0)?.toFloat() ?: 0f
+        crop = if (g == null) FULL else Rect(g.optDouble("l", 0.0).toFloat(), g.optDouble("t", 0.0).toFloat(), g.optDouble("r", 1.0).toFloat(), g.optDouble("b", 1.0).toFloat())
+        aspect = runCatching { Aspect.valueOf(g?.optString("asp") ?: "FREE") }.getOrDefault(Aspect.FREE)
+        flip = g?.optBoolean("flip", false) ?: false
+        keyV = g?.optDouble("kv", 0.0)?.toFloat() ?: 0f
+        keyH = g?.optDouble("kh", 0.0)?.toFloat() ?: 0f
+        retouch = com.lumi.galeria.data.retouchFromJson(o.optJSONObject("retoque"))
+        zoneIndex = zoneIndex.coerceAtMost((retouch.zones.size - 1).coerceAtLeast(0))
+    }
+
+    // Al abrir: el historial empieza con la foto original y, si quedó una edición sin guardar, se retoma.
+    LaunchedEffect(baseBitmap != null) {
+        if (baseBitmap == null) return@LaunchedEffect
+        val blank = snapshot()
+        history = listOf(HistoryStep("Foto original", blank))
+        historyAt = 0
+        val draft = prefsLooks.getString("borrador_${item.id}", null)
+        if (draft != null && draft != blank) {
+            restore(draft)
+            vm.say("Retomada tu edición anterior")
+        }
+        started = true
+    }
+    LaunchedEffect(tab) {
+        when (tab) {
+            7 -> vm.discover("editor_zonas")
+            8 -> vm.discover("editor_borrar")
+            9 -> vm.discover("editor_caras")
+            10 -> vm.discover("editor_marcos")
+            11 -> vm.discover("raw")
+        }
+    }
+    LaunchedEffect(historyOpen) { if (historyOpen) vm.discover("editor_historial") }
+    val stateKey = listOf(quarter, angle, crop, aspect, brightness, contrast, saturation, warmth, look, lookStrength, flip, vignette, fade, hue, keyV, keyH, pro, retouch)
+    LaunchedEffect(stateKey, started) {
+        if (!started) return@LaunchedEffect
+        kotlinx.coroutines.delay(700)
+        val now = snapshot()
+        val at = history.getOrNull(historyAt)
+        if (at?.json == now) return@LaunchedEffect
+        val label = if (history.size == 1 && prefsLooks.getString("borrador_${item.id}", null) != null) "Edición retomada" else describeChange(at?.json, now)
+        history = (history + HistoryStep(label, now)).let { if (it.size > 60) listOf(it.first()) + it.drop(2) else it }
+        historyAt = history.lastIndex
+        if (now == history.first().json) prefsLooks.edit().remove("borrador_${item.id}").apply() else saveDraft(prefsLooks, item.id, now)
+    }
+
+    // El RAW se abre aparte, en luz lineal, solo cuando hace falta.
+    LaunchedEffect(item.id, tab, retouch.raw) {
+        if (item.format == "DNG" && rawBitmap == null && baseBitmap != null && (tab == 11 || !retouch.raw.isZero)) {
+            rawBitmap = withContext(Dispatchers.IO) { com.lumi.galeria.data.decodeRaw(context, item.uri, 3072) }
+            rawHeadroom = rawBitmap?.let { com.lumi.galeria.data.hasRawHeadroom(it) } ?: false
+        }
+    }
+    LaunchedEffect(baseBitmap, rawBitmap, retouch.raw) {
+        val base = baseBitmap ?: return@LaunchedEffect
+        val raw = rawBitmap
+        if (retouch.raw.isZero || raw == null) {
+            if (bitmap !== base) bitmap = base
+            return@LaunchedEffect
+        }
+        kotlinx.coroutines.delay(80)
+        bitmap = withContext(Dispatchers.Default) { runCatching { com.lumi.galeria.data.developRaw(raw, retouch.raw) }.getOrNull() } ?: base
+    }
+    // Las caras se buscan cuando se entra en esa pestaña, o si ya hay un retoque guardado.
+    LaunchedEffect(tab, preview) {
+        val p = preview ?: return@LaunchedEffect
+        if ((tab == 9 || !retouch.faces.isIdentity) && faceShapes == null) {
+            faceStatus = "Buscando caras…"
+            val found = com.lumi.galeria.data.detectFaceShapes(p)
+            if (found.isEmpty()) {
+                faceStatus = "No se ve ninguna cara en esta foto (o Google Play aún está descargando el detector)."
+            } else {
+                faceShapes = found
+                faceStatus = if (found.size == 1) "Una cara encontrada" else "${found.size} caras encontradas"
+            }
+        }
+    }
+    val framed by produceState<Bitmap?>(null, tab, shaped, quarter, angle, crop, tone, toned, flip, vignette, retouch.frame) {
+        val s = shaped ?: return@produceState
+        if (tab != 10) return@produceState
+        value = withContext(Dispatchers.Default) {
+            runCatching { com.lumi.galeria.data.applyFrame(render(s, quarter, angle, crop, if (toned) tone else null, flip, vignette), retouch.frame) }.getOrNull()
+        }
+    }
+    var copiedLook by remember { mutableStateOf(prefsLooks.getString("copiados", null)) }
 
     /** Propone un recorte centrado en lo principal de la foto, con un poco de aire alrededor. */
     fun autoFrame() {
@@ -298,36 +427,62 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
         scope.launch {
             val result = withContext(Dispatchers.Default) {
                 runCatching {
-                    val straight = if (keyV != 0f || keyH != 0f) keystone(bmp, keyV, keyH) else bmp
-                    render(com.lumi.galeria.data.develop(straight, pro), quarter, angle, crop, if (toned) tone else null, flip, vignette)
+                    var base = com.lumi.galeria.data.applyErase(bmp, retouch.erase)
+                    base = com.lumi.galeria.data.applyZones(base, retouch.zones)
+                    if (!retouch.faces.isIdentity) {
+                        val shapes = faceShapes ?: com.lumi.galeria.data.detectFaceShapes(base)
+                        base = com.lumi.galeria.data.applyFaces(base, shapes, retouch.faces)
+                    }
+                    val straight = if (keyV != 0f || keyH != 0f) keystone(base, keyV, keyH) else base
+                    com.lumi.galeria.data.applyFrame(
+                        render(com.lumi.galeria.data.develop(straight, pro), quarter, angle, crop, if (toned) tone else null, flip, vignette),
+                        retouch.frame,
+                    )
                 }.getOrNull()
             }
             when {
                 result == null -> vm.say("No hay memoria suficiente para esta foto")
                 // Tocar el original necesita un permiso del sistema; si se niega, no se guarda nada.
-                replace -> actions.write(listOf(item)) { vm.replaceEdit(item, result) }
-                else -> vm.saveEdit(item, result).join()
+                replace -> { prefsLooks.edit().remove("borrador_${item.id}").apply(); actions.write(listOf(item)) { vm.replaceEdit(item, result) } }
+                else -> { prefsLooks.edit().remove("borrador_${item.id}").apply(); vm.saveEdit(item, result).join() }
             }
             saving = false
         }
     }
 
     Column(Modifier.fillMaxSize().background(Lumi.Bg).statusBarsPadding().navigationBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            PillButton("Cancelar", { vm.back() }, primary = false)
-            Text("Editar", style = HeadingStyle, modifier = Modifier.weight(1f).padding(horizontal = 14.dp))
-            Box {
-                PillButton(if (saving) "Guardando…" else "Guardar", { saveMenu = true }, enabled = changed && !saving && source != null)
-                DropdownMenu(saveMenu, { saveMenu = false }, containerColor = Lumi.Surface) {
-                    DropdownMenuItem({ Text("Guardar una copia") }, { saveMenu = false; save(replace = false) })
-                    DropdownMenuItem({ Text("Reemplazar la original") }, { saveMenu = false; save(replace = true) })
-                }
-            }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Editar", style = HeadingStyle, modifier = Modifier.weight(1f))
         }
 
         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             when {
                 failed -> EmptyMessage("No se puede editar esta foto", "El formato no se deja abrir.")
+                source != null && (tab == 7 || tab == 8) -> {
+                    val zone = retouch.zones.getOrNull(zoneIndex)
+                    val mode = if (tab == 8) PaintMode.ERASE else when (zone?.kind) {
+                        com.lumi.galeria.data.ZoneKind.GRADIENT -> PaintMode.GRADIENT
+                        com.lumi.galeria.data.ZoneKind.CIRCLE -> PaintMode.CIRCLE
+                        else -> PaintMode.BRUSH
+                    }
+                    PaintStage(
+                        image = worked ?: source, mode = mode, radius = brush,
+                        shown = if (tab == 7 && zone?.kind == com.lumi.galeria.data.ZoneKind.BRUSH) zone.strokes else emptyList(),
+                        zone = if (tab == 7) zone else null,
+                        onStroke = { stroke ->
+                            if (tab == 8) retouch = retouch.copy(erase = retouch.erase + stroke)
+                            else if (zone != null && zone.kind == com.lumi.galeria.data.ZoneKind.BRUSH) {
+                                retouch = retouch.copy(zones = retouch.zones.mapIndexed { i, z -> if (i == zoneIndex) z.copy(strokes = z.strokes + stroke) else z })
+                            }
+                        },
+                        onLine = { a, b ->
+                            if (zone != null && zone.kind != com.lumi.galeria.data.ZoneKind.BRUSH) {
+                                retouch = retouch.copy(zones = retouch.zones.mapIndexed { i, z -> if (i == zoneIndex) z.copy(a = a, b = b) else z })
+                            }
+                        },
+                    )
+                }
+                source != null && tab == 10 -> FrameStage(framed)
                 source != null -> {
                     val image = remember(shaped, source) { (shaped ?: source).asImageBitmap() }
                     // Para el «antes»: sin curvas, tonos ni detalle.
@@ -515,27 +670,27 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                         Aspect.entries.forEach { option -> ShapeChip(option, aspect == option) { applyAspect(option) } }
                     }
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Chip(if (framing) "Buscando…" else "Encuadre auto", false) { if (!framing) autoFrame() }
-                        Chip("Perspectiva", perspective || keyV != 0f || keyH != 0f) { perspective = !perspective }
-                        Chip("Girar 90°", false) {
+                        PhotoChip(if (framing) "Buscando…" else "Encuadre auto", false) { if (!framing) autoFrame() }
+                        PhotoChip("Perspectiva", perspective || keyV != 0f || keyH != 0f) { perspective = !perspective }
+                        PhotoChip("Girar 90°", false) {
                             quarter = (quarter + 1) % 4
                             crop = FULL
                             aspect = Aspect.FREE
                         }
-                        Chip("Espejo", flip) { flip = !flip }
+                        PhotoChip("Espejo", flip) { flip = !flip }
                     }
                     if (perspective) {
-                        Tuner("Vertical", keyV * 100, -100f..100f, "%.0f") { keyV = snap(it) / 100 }
-                        Tuner("Horizontal", keyH * 100, -100f..100f, "%.0f") { keyH = snap(it) / 100 }
+                        PhotoTuner("Vertical", keyV * 100, -100f..100f, "%.0f") { keyV = snap(it) / 100 }
+                        PhotoTuner("Horizontal", keyH * 100, -100f..100f, "%.0f") { keyH = snap(it) / 100 }
                     }
                 }
                 1 -> {
-                    Tuner("Brillo", brightness * 100, -100f..100f, "%.0f") { brightness = snap(it) / 100 }
-                    Tuner("Contraste", contrast * 100, -100f..100f, "%.0f") { contrast = snap(it) / 100 }
-                    Tuner("Color", saturation * 100, -100f..100f, "%.0f") { saturation = snap(it) / 100 }
-                    Tuner("Calidez", warmth * 100, -100f..100f, "%.0f") { warmth = snap(it) / 100 }
-                    Tuner("Sombras", pro.shadows * 100, -100f..100f, "%.0f") { pro = pro.copy(shadows = snap(it) / 100) }
-                    Tuner("Luces", pro.highlights * 100, -100f..100f, "%.0f") { pro = pro.copy(highlights = snap(it) / 100) }
+                    PhotoTuner("Brillo", brightness * 100, -100f..100f, "%.0f") { brightness = snap(it) / 100 }
+                    PhotoTuner("Contraste", contrast * 100, -100f..100f, "%.0f") { contrast = snap(it) / 100 }
+                    PhotoTuner("Color", saturation * 100, -100f..100f, "%.0f") { saturation = snap(it) / 100 }
+                    PhotoTuner("Calidez", warmth * 100, -100f..100f, "%.0f") { warmth = snap(it) / 100 }
+                    PhotoTuner("Sombras", pro.shadows * 100, -100f..100f, "%.0f") { pro = pro.copy(shadows = snap(it) / 100) }
+                    PhotoTuner("Luces", pro.highlights * 100, -100f..100f, "%.0f") { pro = pro.copy(highlights = snap(it) / 100) }
                 }
                 2 -> Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     // Cada filtro, aplicado a una miniatura de la propia foto.
@@ -547,21 +702,30 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                     }
                     // Los filtros propios, primero. Mantener pulsado uno lo borra.
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Chip("Guardar mis ajustes como filtro", false) { naming = true }
+                        PhotoChip("Guardar mis ajustes como filtro", false) { naming = true }
                         savedLooks.forEach { saved ->
-                            Text(
-                                saved.name, style = LabelStyle, color = Lumi.OnAccent,
-                                modifier = Modifier.clip(CircleShape).background(Lumi.Accent)
-                                    .combinedClickable(
-                                        onClick = { applyLook(saved.values) },
-                                        onLongClick = {
-                                            savedLooks = savedLooks.filter { it !== saved }
-                                            writeLooks(prefsLooks, savedLooks)
-                                            vm.say("Filtro «${saved.name}» borrado")
-                                        },
+                            val savedMatrix = remember(saved) { toneFromValues(saved.values) }
+                            Column(
+                                Modifier.clip(RoundedCornerShape(12.dp)).combinedClickable(
+                                    onClick = { applyLook(saved.values) },
+                                    onLongClick = {
+                                        savedLooks = savedLooks.filter { it !== saved }
+                                        writeLooks(prefsLooks, savedLooks)
+                                        vm.say("Filtro «${saved.name}» borrado")
+                                    },
+                                ),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                if (thumb != null) {
+                                    Image(
+                                        thumb, null, contentScale = ContentScale.Crop,
+                                        colorFilter = ColorFilter.colorMatrix(ColorMatrix(savedMatrix)),
+                                        modifier = Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)).border(2.dp, Lumi.Accent.copy(alpha = 0.6f), RoundedCornerShape(12.dp)),
                                     )
-                                    .padding(horizontal = 14.dp, vertical = 9.dp),
-                            )
+                                }
+                                Text(saved.name, style = SmallStyle, color = Lumi.Accent, maxLines = 1)
+                            }
                         }
                     }
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -589,12 +753,12 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                             }
                         }
                     }
-                    if (look != Look.NONE) Tuner("Intensidad", lookStrength * 100, 0f..100f, "%.0f") { lookStrength = it / 100 }
+                    if (look != Look.NONE) PhotoTuner("Intensidad", lookStrength * 100, 0f..100f, "%.0f") { lookStrength = it / 100 }
                 }
                 4 -> {
                     var channel by remember { mutableStateOf(com.lumi.galeria.data.Channel.ALL) }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        com.lumi.galeria.data.Channel.entries.forEach { option -> Chip(option.label, channel == option) { channel = option } }
+                        com.lumi.galeria.data.Channel.entries.forEach { option -> PhotoChip(option.label, channel == option) { channel = option } }
                     }
                     CurveEditor(pro.curve(channel), channel, histogram) { next -> pro = pro.copy(curves = pro.curves + (channel to next)) }
                     Text("Arrastra la línea para cambiarla; toca dos veces un punto para quitarlo.", style = SmallStyle)
@@ -613,24 +777,29 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                     }
                     val shift = pro.bands[band] ?: com.lumi.galeria.data.BandShift()
                     Text(band.label, style = LabelStyle)
-                    Tuner("Tono", shift.hue * 100, -100f..100f, "%.0f") { pro = pro.copy(bands = pro.bands + (band to shift.copy(hue = snap(it) / 100))) }
-                    Tuner("Saturación", shift.saturation * 100, -100f..100f, "%.0f") { pro = pro.copy(bands = pro.bands + (band to shift.copy(saturation = snap(it) / 100))) }
-                    Tuner("Luminosidad", shift.lightness * 100, -100f..100f, "%.0f") { pro = pro.copy(bands = pro.bands + (band to shift.copy(lightness = snap(it) / 100))) }
+                    PhotoTuner("Tono", shift.hue * 100, -100f..100f, "%.0f") { pro = pro.copy(bands = pro.bands + (band to shift.copy(hue = snap(it) / 100))) }
+                    PhotoTuner("Saturación", shift.saturation * 100, -100f..100f, "%.0f") { pro = pro.copy(bands = pro.bands + (band to shift.copy(saturation = snap(it) / 100))) }
+                    PhotoTuner("Luminosidad", shift.lightness * 100, -100f..100f, "%.0f") { pro = pro.copy(bands = pro.bands + (band to shift.copy(lightness = snap(it) / 100))) }
                 }
                 6 -> {
-                    Tuner("Nitidez", pro.sharpen * 100, 0f..100f, "%.0f") { pro = pro.copy(sharpen = it / 100) }
-                    Tuner("Quitar ruido", pro.denoise * 100, 0f..100f, "%.0f") { pro = pro.copy(denoise = it / 100) }
-                    Tuner("Grano", pro.grain * 100, 0f..100f, "%.0f") { pro = pro.copy(grain = it / 100) }
+                    PhotoTuner("Nitidez", pro.sharpen * 100, 0f..100f, "%.0f") { pro = pro.copy(sharpen = it / 100) }
+                    PhotoTuner("Quitar ruido", pro.denoise * 100, 0f..100f, "%.0f") { pro = pro.copy(denoise = it / 100) }
+                    PhotoTuner("Grano", pro.grain * 100, 0f..100f, "%.0f") { pro = pro.copy(grain = it / 100) }
                 }
+                7 -> ZonesPanel(retouch, zoneIndex, { zoneIndex = it }, brush, { brush = it }) { retouch = it }
+                8 -> ErasePanel(retouch, brush, { brush = it }) { retouch = it }
+                9 -> FacesPanel(retouch, faceStatus) { retouch = it }
+                10 -> FramePanel(retouch) { retouch = it }
+                11 -> RawPanel(retouch, rawHeadroom) { retouch = it }
                 else -> {
-                    Tuner("Viñeta", vignette * 100, 0f..100f, "%.0f") { vignette = it / 100 }
-                    Tuner("Desvanecer", fade * 100, 0f..100f, "%.0f") { fade = it / 100 }
-                    Tuner("Tono", hue * 100, -100f..100f, "%.0f") { hue = snap(it) / 100 }
+                    PhotoTuner("Viñeta", vignette * 100, 0f..100f, "%.0f") { vignette = it / 100 }
+                    PhotoTuner("Desvanecer", fade * 100, 0f..100f, "%.0f") { fade = it / 100 }
+                    PhotoTuner("Tono", hue * 100, -100f..100f, "%.0f") { hue = snap(it) / 100 }
                 }
             }
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 // Un toque corrige luz y color según lo clara u oscura que sea la foto; después se puede afinar a mano.
-                Chip("Auto", false) {
+                PhotoChip("Auto", false) {
                     source?.let { bmp ->
                         val auto = autoLevels(bmp)
                         brightness = auto[0]
@@ -639,8 +808,22 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                         tab = 1
                     }
                 }
-                listOf("Recortar", "Luz y color", "Filtros", "Efectos", "Curvas", "Tonos", "Detalle").forEachIndexed { i, label -> Chip(label, tab == i) { tab = i } }
-                Chip("Antes y después", split != null) { split = if (split == null) 0.5f else null }
+                listOf("Recortar", "Luz y color", "Filtros", "Efectos", "Curvas", "Tonos", "Detalle").forEachIndexed { i, label -> PhotoChip(label, tab == i) { tab = i } }
+                listOf(7 to "Zonas", 8 to "Borrar", 9 to "Caras", 10 to "Marco").forEach { (i, label) -> PhotoChip(label, tab == i) { tab = i } }
+                if (item.format == "DNG") PhotoChip("Revelar RAW", tab == 11) { tab = 11 }
+                PhotoChip("Historial · ${history.size}", false) { historyOpen = true }
+                PhotoChip("Copiar ajustes", false) {
+                    val values = currentLook().toString()
+                    prefsLooks.edit().putString("copiados", values).apply()
+                    copiedLook = values
+                    vm.discover("copiar_ajustes")
+                    vm.say("Ajustes copiados. Pégalos en otra foto o en varias a la vez desde la selección.")
+                }
+                if (copiedLook != null) PhotoChip("Pegar ajustes", false) {
+                    runCatching { applyLook(org.json.JSONObject(copiedLook!!)) }
+                    vm.say("Ajustes pegados")
+                }
+                PhotoChip("Antes y después", split != null) { split = if (split == null) 0.5f else null }
                 Text(
                     "Deshacer todo",
                     style = LabelStyle,
@@ -663,12 +846,35 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
                         keyH = 0f
                         lookStrength = 1f
                         pro = com.lumi.galeria.data.Develop()
+                        retouch = com.lumi.galeria.data.Retouch()
+                        zoneIndex = 0
                     }.padding(horizontal = 14.dp, vertical = 11.dp),
                 )
+            }
+            // Cancelar y guardar, abajo, al alcance del pulgar.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PillButton("Cancelar", { vm.back() }, modifier = Modifier.weight(1f), primary = false)
+                Box(Modifier.weight(2f)) {
+                    PillButton(if (saving) "Guardando…" else "Guardar", { saveMenu = true }, modifier = Modifier.fillMaxWidth(), enabled = changed && !saving && source != null)
+                    DropdownMenu(saveMenu, { saveMenu = false }, containerColor = Lumi.Surface) {
+                        DropdownMenuItem({ Text("Guardar una copia") }, { saveMenu = false; save(replace = false) })
+                        DropdownMenuItem({ Text("Reemplazar la original") }, { saveMenu = false; save(replace = true) })
+                    }
+                }
             }
         }
     }
 
+    if (historyOpen) {
+        HistoryDialog(
+            steps = history, current = historyAt,
+            onPick = { i ->
+                history.getOrNull(i)?.let { restore(it.json); historyAt = i }
+                historyOpen = false
+            },
+            onDismiss = { historyOpen = false },
+        )
+    }
     if (naming) {
         var name by remember { mutableStateOf("") }
         AlertDialog(
@@ -692,6 +898,59 @@ fun EditorScreen(screen: Screen.Editor, state: UiState, vm: LumiViewModel, actio
             },
         )
     }
+}
+
+/** La matriz de color de un filtro guardado, para enseñar su miniatura. */
+internal fun toneFromValues(values: org.json.JSONObject): FloatArray = toneMatrix(
+    values.optDouble("brillo", 0.0).toFloat(), values.optDouble("contraste", 0.0).toFloat(), values.optDouble("color", 0.0).toFloat(),
+    values.optDouble("calidez", 0.0).toFloat(), runCatching { Look.valueOf(values.optString("filtro", "NONE")) }.getOrDefault(Look.NONE),
+    values.optDouble("desvanecer", 0.0).toFloat(), values.optDouble("tono", 0.0).toFloat(), values.optDouble("intensidad", 1.0).toFloat(),
+)
+
+/** Aplica unos ajustes copiados a una foto entera, sin pasar por la pantalla del editor. */
+internal fun renderWithLook(source: Bitmap, values: org.json.JSONObject): Bitmap {
+    val pro = values.optJSONObject("pro")?.let { developFromJson(it) } ?: com.lumi.galeria.data.Develop()
+    return render(com.lumi.galeria.data.develop(source, pro), 0, 0f, FULL, toneFromValues(values), false, values.optDouble("vineta", 0.0).toFloat())
+}
+
+/** Abre una foto para editarla, a lo sumo con 4096 puntos de lado largo. */
+internal fun decodeEditable(context: android.content.Context, uri: android.net.Uri): Bitmap? = runCatching {
+    ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, info, _ ->
+        decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+        val longSide = maxOf(info.size.width, info.size.height)
+        if (longSide > MAX_SIDE) {
+            val k = MAX_SIDE.toFloat() / longSide
+            decoder.setTargetSize((info.size.width * k).toInt(), (info.size.height * k).toInt())
+        }
+    }
+}.getOrNull()
+
+/** Guarda el borrador de una foto; solo se conservan los últimos veinte. */
+private fun saveDraft(prefs: android.content.SharedPreferences, id: Long, json: String) {
+    val order = prefs.getString("borradores", "").orEmpty().split(',').filter { it.isNotEmpty() && it != id.toString() } + id.toString()
+    val edit = prefs.edit()
+    order.dropLast(20).forEach { edit.remove("borrador_$it") }
+    edit.putString("borradores", order.takeLast(20).joinToString(",")).putString("borrador_$id", json).apply()
+}
+
+/** Resume en pocas palabras qué cambió entre dos pasos del historial. */
+private fun describeChange(prev: String?, next: String): String {
+    val a = prev?.let { runCatching { org.json.JSONObject(it) }.getOrNull() } ?: return "Cambio"
+    val b = runCatching { org.json.JSONObject(next) }.getOrNull() ?: return "Cambio"
+    val parts = ArrayList<String>()
+    fun differs(vararg keys: String) = keys.any { a.opt(it)?.toString() != b.opt(it)?.toString() }
+    fun differsIn(parent: String, key: String) = a.optJSONObject(parent)?.opt(key)?.toString() != b.optJSONObject(parent)?.opt(key)?.toString()
+    if (differs("geo")) parts += "Recorte y giro"
+    if (differs("brillo", "contraste", "color", "calidez")) parts += "Luz y color"
+    if (differs("filtro", "intensidad")) parts += "Filtro"
+    if (differs("desvanecer", "tono", "vineta")) parts += "Efectos"
+    if (differs("pro")) parts += "Curvas, tonos o detalle"
+    if (differsIn("retoque", "erase")) parts += "Borrar"
+    if (differsIn("retoque", "zonas")) parts += "Zonas"
+    if (differsIn("retoque", "caras")) parts += "Caras"
+    if (differsIn("retoque", "marco")) parts += "Marco"
+    if (differsIn("retoque", "raw")) parts += "Revelado RAW"
+    return parts.take(2).joinToString(" · ").ifEmpty { "Cambio" }
 }
 
 private fun readLooks(prefs: android.content.SharedPreferences): List<com.lumi.galeria.data.SavedLook> = runCatching {
@@ -721,7 +980,7 @@ private fun developToJson(d: com.lumi.galeria.data.Develop): org.json.JSONObject
     })
 }
 
-private fun developFromJson(o: org.json.JSONObject): com.lumi.galeria.data.Develop {
+internal fun developFromJson(o: org.json.JSONObject): com.lumi.galeria.data.Develop {
     val curves = HashMap<com.lumi.galeria.data.Channel, com.lumi.galeria.data.Curve>()
     o.optJSONObject("curvas")?.let { c ->
         c.keys().forEach { key ->
@@ -749,7 +1008,7 @@ private fun developFromJson(o: org.json.JSONObject): com.lumi.galeria.data.Devel
  * en otro sitio, crea uno nuevo en la línea. Dos toques sobre un punto lo quitan.
  */
 @Composable
-private fun CurveEditor(curve: com.lumi.galeria.data.Curve, channel: com.lumi.galeria.data.Channel, histogram: FloatArray?, onChange: (com.lumi.galeria.data.Curve) -> Unit) {
+internal fun CurveEditor(curve: com.lumi.galeria.data.Curve, channel: com.lumi.galeria.data.Channel, histogram: FloatArray?, onChange: (com.lumi.galeria.data.Curve) -> Unit) {
     val line = when (channel) {
         com.lumi.galeria.data.Channel.ALL -> Lumi.Ink
         com.lumi.galeria.data.Channel.RED -> Color(0xFFFF5A5A)
@@ -829,7 +1088,7 @@ private fun CurveEditor(curve: com.lumi.galeria.data.Curve, channel: com.lumi.ga
  * (de -1 a 1). Mira cómo se reparte la luz: si la foto no llega ni al negro ni al blanco, sube el
  * contraste hasta que llegue; si queda oscura o quemada en conjunto, la acerca al gris medio.
  */
-private fun autoLevels(bitmap: Bitmap): FloatArray {
+internal fun autoLevels(bitmap: Bitmap): FloatArray {
     val histogram = IntArray(256)
     val steps = 64
     for (y in 0 until steps) for (x in 0 until steps) {
@@ -857,7 +1116,7 @@ private fun autoLevels(bitmap: Bitmap): FloatArray {
 private fun snap(value: Float): Float = if (abs(value) < 4f) 0f else value
 
 @Composable
-private fun Tuner(label: String, value: Float, range: ClosedFloatingPointRange<Float>, format: String, onChange: (Float) -> Unit) {
+internal fun PhotoTuner(label: String, value: Float, range: ClosedFloatingPointRange<Float>, format: String, onChange: (Float) -> Unit) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(label, style = LabelStyle, modifier = Modifier.width(78.dp))
         Slider(
@@ -871,12 +1130,12 @@ private fun Tuner(label: String, value: Float, range: ClosedFloatingPointRange<F
     }
 }
 
-private enum class Look(val label: String) {
+internal enum class Look(val label: String) {
     NONE("Original"), VIVID("Vívido"), WARM("Cálido"), COOL("Frío"), FADED("Suave"), MONO("Blanco y negro"), SEPIA("Sepia"),
 }
 
 /** Matriz de color 4x5 que resume los ajustes y el filtro; sirve igual para la vista previa y para guardar. */
-private fun toneMatrix(brightness: Float, contrast: Float, saturation: Float, warmth: Float, look: Look, fade: Float, hue: Float, lookStrength: Float = 1f): FloatArray {
+internal fun toneMatrix(brightness: Float, contrast: Float, saturation: Float, warmth: Float, look: Look, fade: Float, hue: Float, lookStrength: Float = 1f): FloatArray {
     fun levels(scale: Float, shift: Float) = android.graphics.ColorMatrix(
         floatArrayOf(scale, 0f, 0f, 0f, shift, 0f, scale, 0f, 0f, shift, 0f, 0f, scale, 0f, shift, 0f, 0f, 0f, 1f, 0f),
     )
@@ -945,15 +1204,16 @@ private fun toneMatrix(brightness: Float, contrast: Float, saturation: Float, wa
 }
 
 @Composable
-private fun Chip(label: String, on: Boolean, onClick: () -> Unit) {
+internal fun PhotoChip(label: String, on: Boolean, onClick: () -> Unit) {
     Text(
         label,
         style = LabelStyle,
         color = if (on) Lumi.OnAccent else Lumi.Ink,
         modifier = Modifier
+            .minimumInteractiveComponentSize()
             .clip(CircleShape)
             .background(if (on) Lumi.Accent else Lumi.Surface)
-            .clickable(onClick = onClick)
+            .clickable(role = androidx.compose.ui.semantics.Role.Button, onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 11.dp),
     )
 }
@@ -990,7 +1250,7 @@ private fun dragCrop(crop: Rect, grab: Grab, dx: Float, dy: Float, heightPerWidt
 }
 
 /** Aplica espejo, giro, enderezado, recorte, color y viñeta sobre la imagen a tamaño real. */
-private fun render(source: Bitmap, quarter: Int, angle: Float, crop: Rect, tone: FloatArray?, flip: Boolean, vignette: Float): Bitmap {
+internal fun render(source: Bitmap, quarter: Int, angle: Float, crop: Rect, tone: FloatArray?, flip: Boolean, vignette: Float): Bitmap {
     val base = if (quarter == 0 && !flip) source else {
         val turn = Matrix().apply {
             if (flip) postScale(-1f, 1f)

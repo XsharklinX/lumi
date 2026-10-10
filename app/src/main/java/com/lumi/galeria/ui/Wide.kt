@@ -64,7 +64,7 @@ fun isImmersive(screen: Screen): Boolean = when (screen) {
     is Screen.Viewer, is Screen.Editor, is Screen.Markup, is Screen.Cutout, is Screen.Wallpaper, is Screen.Rotate,
     is Screen.StoryView, is Screen.Collage, is Screen.Compare, is Screen.Gif, is Screen.Pdf,
     Screen.SwipeReview, is Screen.VideoEditor, is Screen.Animate, is Screen.Portrait, is Screen.MemoryVideo,
-    Screen.Camera, is Screen.SignDoc, is Screen.Signature, Screen.Tour, is Screen.Show, Screen.CameraSettings -> true
+    is Screen.MonthStory, is Screen.StickerMaker, Screen.Camera, is Screen.SignDoc, is Screen.Signature, Screen.Tour, is Screen.Show, Screen.CameraSettings -> true
     else -> false
 }
 

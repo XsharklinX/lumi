@@ -79,7 +79,7 @@ fun Modifier.pressScale(source: MutableInteractionSource, pressed: Float = 0.95f
 @Composable
 fun rememberTick(): (Int) -> Unit {
     val view = LocalView.current
-    return remember(view) { { kind -> view.performHapticFeedback(kind) } }
+    return remember(view) { { kind -> Haptics.perform(view, kind) } }
 }
 
 /** «2×» del vídeo: tres flechas dibujadas que se encienden una tras otra mientras se mantiene el dedo. */

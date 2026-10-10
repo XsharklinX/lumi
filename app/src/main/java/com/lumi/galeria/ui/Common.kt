@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -230,7 +231,7 @@ fun PhotoTile(
     motion: Boolean = false,
 ) {
     Box(
-        modifier.clip(RoundedCornerShape(corner)).semantics {
+        modifier.cascadeIn(item.id).clip(RoundedCornerShape(corner)).semantics {
             // TalkBack dice lo que Lumi sabe de la foto: qué sale, quién, dónde y cuándo.
             val known = LocalStateHolder.state
             val things = com.lumi.galeria.data.thingWords(known?.index?.get(item.id)).take(3).map { tr(it) }
@@ -272,6 +273,8 @@ fun PhotoTile(
                 }
             } else if (item.isGif) {
                 Badge(Modifier.align(Alignment.BottomStart)) { Text("GIF", style = SmallStyle, color = Color.White) }
+            } else if (item.format == "DNG") {
+                Badge(Modifier.align(Alignment.BottomStart)) { Text("RAW", style = SmallStyle, color = Color.White) }
             } else if (motion) {
                 // Un punto con su aro, como el botón de grabar: se mueve.
                 Box(
@@ -831,7 +834,7 @@ fun FastScroller(grid: LazyGridState, count: Int, label: (index: Int) -> String,
                                 val now = label(index)
                                 if (now != lastLabel) {
                                     lastLabel = now
-                                    scrollView.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+                                    Haptics.perform(scrollView, android.view.HapticFeedbackConstants.CLOCK_TICK)
                                 }
                             }
                         },
@@ -847,17 +850,67 @@ fun FastScroller(grid: LazyGridState, count: Int, label: (index: Int) -> String,
 
 /** Barra que sustituye a la de pestañas mientras hay fotos elegidas: cuántas son, cuánto pesan y qué se puede hacer con ellas. */
 @Composable
-fun SelectionBar(chosen: List<MediaItem>, state: UiState, vm: LumiViewModel, actions: Actions, onClear: () -> Unit) {
+fun SelectionBar(
+    chosen: List<MediaItem>, state: UiState, vm: LumiViewModel, actions: Actions,
+    /** Las fotos entre las que se puede elegir (para los atajos), y cómo cambiar lo elegido. */
+    pool: List<MediaItem> = emptyList(),
+    onSelect: (Set<Long>) -> Unit = {},
+    onClear: () -> Unit,
+) {
     var menu by remember { mutableStateOf(false) }
     // true = mover, false = copiar, null = cerrado
     var moving by remember { mutableStateOf<Boolean?>(null) }
     val haptic = LocalHapticFeedback.current
     val weight = remember(chosen) { chosen.sumOf { it.size } }
     val context = LocalContext.current
+    val view = androidx.compose.ui.platform.LocalView.current
     val card = remember { cardVolume(context) }
 
     val targets = remember(state.albums) { state.albums.filter { isWritableAlbumPath(it.path) && !it.locked }.take(12) }
+    var tagging by remember { mutableStateOf(false) }
+    var temporary by remember { mutableStateOf(false) }
+    if (tagging) {
+        val used = remember(state.notes) { state.notes.values.flatMap { it.tags }.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.map { it.key } }
+        TagsDialog(chosen.size, used, onAdd = { tags -> tagging = false; vm.addTagsTo(chosen.map { it.id }, tags); onClear() }, onDismiss = { tagging = false })
+    }
+    if (temporary) {
+        TemporaryDialog(chosen.size, onPick = { days -> temporary = false; vm.markTemporary(chosen.map { it.id }, days); onClear() }, onDismiss = { temporary = false })
+    }
     Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Atajos de selección: las parecidas, las del mismo día, todas o la inversa.
+        if (pool.isNotEmpty()) {
+            val ids = chosen.mapTo(HashSet()) { it.id }
+            val zone = java.time.ZoneId.systemDefault()
+            fun day(item: MediaItem) = java.time.Instant.ofEpochMilli(item.date).atZone(zone).toLocalDate()
+            Row(
+                Modifier.align(Alignment.CenterHorizontally).clip(CircleShape).background(Lumi.Surface.copy(alpha = 0.96f)).horizontalScroll(rememberScrollState()).padding(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Elegir", style = SmallStyle, modifier = Modifier.padding(start = 8.dp, end = 2.dp))
+                @Composable
+                fun shortcut(label: String, pick: () -> Set<Long>) {
+                    Text(
+                        label, style = LabelStyle,
+                        modifier = Modifier.defaultMinSize(minHeight = 40.dp).clip(CircleShape).background(Lumi.Bg)
+                            .clickable { Haptics.perform(view, Haptics.TICK); vm.discover("seleccion_inteligente"); onSelect(pick()) }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                    )
+                }
+                shortcut("Las parecidas") {
+                    val similar = state.stackByBest.values.filter { s -> s.members.any { it.id in ids } }.flatMap { s -> s.members.map { it.id } }
+                    // Y las hechas con menos de minuto y medio de diferencia: ráfagas y repeticiones.
+                    val near = pool.filter { p -> chosen.any { c -> kotlin.math.abs(p.date - c.date) < 90_000 && p.isVideo == c.isVideo } }.map { it.id }
+                    ids + similar + near
+                }
+                shortcut("Las de este día") {
+                    val days = chosen.mapTo(HashSet()) { day(it) }
+                    ids + pool.filter { day(it) in days }.map { it.id }
+                }
+                shortcut("Todas") { pool.mapTo(HashSet()) { it.id } }
+                shortcut("Invertir") { pool.filter { it.id !in ids }.mapTo(HashSet()) { it.id } }
+            }
+        }
         // Con otra app al lado, lo elegido se puede soltar en ella.
         if (canDragOut()) Box(Modifier.align(Alignment.CenterHorizontally)) { DragOutHandle(chosen) }
         // Arrastrar lo elegido a un álbum de la bandeja que sale a un lado.
@@ -947,6 +1000,15 @@ fun SelectionBar(chosen: List<MediaItem>, state: UiState, vm: LumiViewModel, act
                             onClear()
                         })
                         DropdownMenuItem({ Text("Copiar a un álbum") }, { menu = false; moving = false })
+                        DropdownMenuItem({ Text("Etiquetar…") }, { menu = false; tagging = true })
+                        context.getSharedPreferences("editor", android.content.Context.MODE_PRIVATE).getString("copiados", null)?.let { copied ->
+                            if (chosen.any { !it.isVideo }) DropdownMenuItem({ Text("Pegar los ajustes copiados del editor") }, {
+                                menu = false
+                                vm.pasteAdjustments(chosen, copied)
+                                onClear()
+                            })
+                        }
+                        DropdownMenuItem({ Text("Borrar sola dentro de unos días…") }, { menu = false; temporary = true })
                         DropdownMenuItem({ Text("Enseñar a alguien") }, {
                             menu = false
                             val photos = chosen.filter { !it.isVideo }

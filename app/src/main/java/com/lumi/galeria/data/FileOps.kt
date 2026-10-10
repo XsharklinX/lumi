@@ -58,7 +58,10 @@ fun moveItems(context: Context, items: List<MediaItem>, relativePath: String): I
 }
 
 /** Guarda [bitmap] como foto nueva junto a [original], que no se toca. */
-fun saveEdited(context: Context, original: MediaItem, bitmap: Bitmap): Boolean {
+fun saveEdited(context: Context, original: MediaItem, bitmap: Bitmap): Boolean = saveEditedAs(context, original, bitmap) != null
+
+/** Igual que [saveEdited], pero dice dónde quedó la copia (para poder deshacerlo). */
+fun saveEditedAs(context: Context, original: MediaItem, bitmap: Bitmap): android.net.Uri? {
     val resolver = context.contentResolver
     val values = ContentValues().apply {
         put(MediaStore.MediaColumns.DISPLAY_NAME, original.name.substringBeforeLast('.') + "_editada.jpg")
@@ -66,7 +69,7 @@ fun saveEdited(context: Context, original: MediaItem, bitmap: Bitmap): Boolean {
         put(MediaStore.MediaColumns.RELATIVE_PATH, if (isWritableAlbumPath(original.path)) original.path else "Pictures/Lumi/")
         put(MediaStore.MediaColumns.IS_PENDING, 1)
     }
-    val target = runCatching { resolver.insert(collection(false), values) }.getOrNull() ?: return false
+    val target = runCatching { resolver.insert(collection(false), values) }.getOrNull() ?: return null
     val saved = runCatching {
         resolver.openOutputStream(target)!!.use { bitmap.compress(Bitmap.CompressFormat.JPEG, 95, it) }
         // Con la fecha original, la copia aparece al lado de la foto de la que sale.
@@ -84,7 +87,7 @@ fun saveEdited(context: Context, original: MediaItem, bitmap: Bitmap): Boolean {
         resolver.update(target, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
     }.isSuccess
     if (!saved) runCatching { resolver.delete(target, null, null) }
-    return saved
+    return if (saved) target else null
 }
 
 private val GPS_TAGS = arrayOf(

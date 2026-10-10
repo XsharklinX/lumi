@@ -185,6 +185,16 @@ class Indexer(private val context: Context) {
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     private val labeler by lazy { ImageLabeling.getClient(ImageLabelerOptions.Builder().setConfidenceThreshold(0.4f).build()) }
 
+    /** Olvida todo lo analizado para que se vuelva a leer desde cero. */
+    @Synchronized
+    fun reset() {
+        load()
+        entries.clear()
+        dirty.clear()
+        gone.clear()
+        runCatching { store.writableDatabase.execSQL("DELETE FROM foto") }
+    }
+
     /** Lo que se sabe ahora mismo, incluido lo guardado de otras veces. */
     fun snapshot(): Map<Long, IndexEntry> {
         load()

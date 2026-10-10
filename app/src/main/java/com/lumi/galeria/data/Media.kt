@@ -31,6 +31,8 @@ data class MediaItem(
     val onCard: Boolean = false,
     /** Grados que hay que girar la imagen guardada para verla derecha (0, 90, 180 o 270). */
     val rotation: Int = 0,
+    /** El archivo no dice cuándo se hizo: la fecha es la de modificación. */
+    val noDate: Boolean = false,
 ) {
     /** Ancho y alto tal como se ve, ya girada. */
     val shownWidth: Int get() = if (rotation % 180 == 0) width else height
@@ -200,6 +202,7 @@ fun loadLibrary(context: Context): Library {
                 // El almacenamiento interno se llama siempre igual; cualquier otro nombre es una tarjeta.
                 onCard = c.getString(14)?.let { it != MediaStore.VOLUME_EXTERNAL_PRIMARY } ?: false,
                 rotation = c.getInt(15),
+                noDate = taken <= 0,
             )
             if (isTrashed) trashed += item else active += item
         }

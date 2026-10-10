@@ -4,6 +4,29 @@ Una entrada por versión, la más reciente arriba. Cada idioma admite 500 caract
 El bloque de cada versión se pega tal cual en «Notas de la versión»: las etiquetas `<es-ES>` y
 `<en-US>` son las que usa Play Console para separar los idiomas.
 
+## 1.3.0 (código 1300)
+
+```
+<es-ES>
+• Álbumes inteligentes, notas y etiquetas en tus fotos y corrección de fechas.
+• Pegatinas para WhatsApp y «Tu mes en fotos».
+• Editor de fotos: zonas, borrar, caras, marcos, historial y RAW.
+• Editor de vídeo nuevo: línea de tiempo, unir, textos, música y formato para redes.
+• Descubre Lumi: consejos y catálogo de funciones.
+• Enviar en dos toques, selección inteligente y deshacer en todo.
+• Más seguridad: espera tras fallar el PIN y sin copia de seguridad en la nube.
+</es-ES>
+<en-US>
+• Smart albums, notes and tags on your photos, and date fixing.
+• WhatsApp stickers and "Your month in photos".
+• Photo editor: areas, erase, faces, frames, history and RAW.
+• New video editor: timeline, join clips, text, music and social formats.
+• Discover Lumi: tips and a catalog of features.
+• Share in two taps, smart selection and undo everywhere.
+• Safer: wait after wrong PINs and no cloud backup.
+</en-US>
+```
+
 ## 1.2.0 (código 1200)
 
 ```

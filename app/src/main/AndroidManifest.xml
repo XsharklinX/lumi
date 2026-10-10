@@ -50,9 +50,24 @@
     <uses-feature android:name="android.hardware.screen.portrait" android:required="false" />
     <uses-feature android:name="android.hardware.screen.landscape" android:required="false" />
 
+    <!-- Para poder añadir las pegatinas a WhatsApp. -->
+    <queries>
+        <!-- Para enseñar en «Enviar» las apps a las que se puede mandar una foto o un vídeo. -->
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="image/*" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="video/*" />
+        </intent>
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+    </queries>
+
     <application
         android:name=".LumiApp"
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Lumi Gallery"
@@ -234,6 +249,14 @@
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             tools:node="remove" />
+
+        <!-- Las pegatinas de Lumi las lee WhatsApp a través de este proveedor. -->
+        <provider
+            android:name="com.lumi.galeria.data.StickerProvider"
+            android:authorities="${applicationId}.stickercontentprovider"
+            android:enabled="true"
+            android:exported="true"
+            android:readPermission="com.whatsapp.sticker.READ" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
